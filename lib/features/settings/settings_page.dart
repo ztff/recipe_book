@@ -1,7 +1,8 @@
 import 'dart:io';
 
-import 'package:file_selector/file_selector.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -44,38 +45,49 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _export() async {
     setState(() => _busy = true);
+    File? tmp;
     try {
       final stamp = DateTime.now().toIso8601String().substring(0, 10);
-      final suggested = 'recipe_book_' + stamp + '.zip';
-      String path;
-      if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-        final loc = await getSaveLocation(suggestedName: suggested);
-        if (loc == null) {
-          setState(() => _busy = false);
-          return;
-        }
-        path = loc.path;
+      final name = 'recipe_book_' + stamp + '.zip';
+      // 先打包到临时目录，再交给系统「保存到文件」对话框，由用户决定落在哪
+      final tmpDir = await getTemporaryDirectory();
+      tmp = File(p.join(tmpDir.path, name));
+      await exportBackup(appDb, tmp.path);
+      final bytes = await tmp.readAsBytes();
+      final uri = await FilePicker.saveFile(
+        dialogTitle: '保存备份文件',
+        fileName: name,
+        bytes: bytes,
+        mimeType: 'application/zip',
+      );
+      if (!mounted) return;
+      if (uri == null) {
+        _snack('已取消保存');
       } else {
-        final dir = await getApplicationDocumentsDirectory();
-        path = p.join(dir.path, suggested);
+        _snack('备份已保存，请自行放到网盘或另一台设备上');
       }
-      await exportBackup(appDb, path);
-      if (mounted) _snack('已导出：' + path);
     } catch (e) {
       if (mounted) _snack('导出失败：' + e.toString());
     } finally {
+      try {
+        if (tmp != null && await tmp.exists()) await tmp.delete();
+      } catch (_) {}
       if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _import() async {
-    final f = await openFile(acceptedTypeGroups: const [
-      XTypeGroup(label: 'zip', extensions: ['zip']),
-    ]);
-    if (f == null) return;
+    final res = await FilePicker.pickFiles(
+      dialogTitle: '选择备份文件',
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+    );
+    if (res.isEmpty) return;
+    final picked = res.first.path;
+    if (picked == null) return;
     setState(() => _busy = true);
     try {
-      await importBackup(File(f.path), appDb);
+      await importBackup(File(picked), appDb);
       if (!mounted) return;
       setState(() {
         _busy = false;
@@ -136,7 +148,44 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final recipes = appDb.allRecipes();
+    // 导入后数据库句柄已关闭，此时不能再查询，直接给重启提示页
+    if (_needsRestart) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('设置')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.check_circle_outline, size: 56, color: scheme.primary),
+                const SizedBox(height: 18),
+                Text('导入完成', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 10),
+                const Text('备份已覆盖本地数据库，需要重新打开应用才会生效。',
+                    textAlign: TextAlign.center),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: () => SystemNavigator.pop(),
+                  icon: const Icon(Icons.power_settings_new),
+                  label: const Text('立即退出'),
+                ),
+                const SizedBox(height: 10),
+                Text('退出后手动打开应用即可看到恢复的数据',
+                    style: TextStyle(fontSize: 12, color: scheme.outline)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    int recipeCount = 0;
+    int cookCount = 0;
+    try {
+      final recipes = appDb.allRecipes();
+      recipeCount = recipes.length;
+      cookCount = recipes.fold<int>(0, (s, r) => s + r.cookCount);
+    } catch (_) {}
     final images = appImageDir.existsSync() ? appImageDir.listSync().length : 0;
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
@@ -160,15 +209,10 @@ class _SettingsPageState extends State<SettingsPage> {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  Expanded(child: _stat('菜谱', recipes.length.toString())),
+                  Expanded(child: _stat('菜谱', recipeCount.toString())),
                   Expanded(child: _stat('图片', images.toString())),
                   Expanded(
-                    child: _stat(
-                      '做菜记录',
-                      recipes
-                          .fold<int>(0, (s, r) => s + r.cookCount)
-                          .toString(),
-                    ),
+                    child: _stat('做菜记录', cookCount.toString()),
                   ),
                 ],
               ),
