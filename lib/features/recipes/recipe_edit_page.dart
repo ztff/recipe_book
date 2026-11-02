@@ -1,12 +1,16 @@
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../core/constants.dart';
+import '../../core/ocr.dart';
 import '../../core/paths.dart';
 import '../../core/pick_image.dart';
 import '../../core/pinyin.dart';
+import '../../core/recipe_parser.dart';
 import '../../data/db.dart';
 import '../../main.dart';
 
@@ -59,6 +63,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
   final List<_IngEdit> _ings = [];
   final List<_StepEdit> _steps = [];
   bool _loading = true;
+  bool _ocrBusy = false;
 
   bool get _isNew => widget.recipeId == null;
 
@@ -128,6 +133,93 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     setState(() => _imagePath = name);
   }
 
+  Future<File?> _pickSourceImage() async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      final f = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 2200,
+        imageQuality: 90,
+      );
+      if (f == null) return null;
+      return File(f.path);
+    }
+    final res = await FilePicker.pickFiles(
+      dialogTitle: '选择含菜谱的图片',
+      type: FileType.image,
+    );
+    if (res.isEmpty || res.first.path == null) return null;
+    return File(res.first.path!);
+  }
+
+  Future<void> _importFromImage() async {
+    setState(() => _ocrBusy = true);
+    try {
+      final file = await _pickSourceImage();
+      if (file == null) {
+        setState(() => _ocrBusy = false);
+        return;
+      }
+      final text = await recognizeText(file);
+      if (text == null) {
+        if (!mounted) return;
+        setState(() => _ocrBusy = false);
+        _snack('没读到文字，换张更清晰的图（正对、光足、别糊）');
+        return;
+      }
+      final parsed = parseRecipeText(text);
+      if (parsed.isEmpty) {
+        if (!mounted) return;
+        setState(() => _ocrBusy = false);
+        _snack('读到了字，但没认出菜谱结构，可以手动填');
+        return;
+      }
+      // 图片同时存为封面，省得再选一次
+      final stored = await pickAndStoreImage(prePicked: file);
+
+      if (!mounted) return;
+      setState(() {
+        if (parsed.name != null && _nameCtrl.text.trim().isEmpty) {
+          _nameCtrl.text = parsed.name!;
+        }
+        if (parsed.ingredients.isNotEmpty) {
+          for (final i in _ings) {
+            i.dispose();
+          }
+          _ings.clear();
+          for (final i in parsed.ingredients) {
+            _ings.add(_IngEdit(
+              name: i.name,
+              qty: i.qty == null ? '' : _trimNum(i.qty!),
+              unit: i.unit ?? '克',
+            ));
+          }
+        }
+        if (parsed.steps.isNotEmpty) {
+          for (final s in _steps) {
+            s.dispose();
+          }
+          _steps.clear();
+          for (final s in parsed.steps) {
+            _steps.add(_StepEdit(text: s));
+          }
+        }
+        if (_ings.isEmpty) _ings.add(_IngEdit());
+        if (_steps.isEmpty) _steps.add(_StepEdit());
+        if (stored != null) _imagePath = stored;
+        _ocrBusy = false;
+      });
+      _snack('识别到 '
+          + parsed.ingredients.length.toString()
+          + ' 条食材、'
+          + parsed.steps.length.toString()
+          + ' 个步骤，请逐条核对');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _ocrBusy = false);
+      _snack('识别失败：' + e.toString());
+    }
+  }
+
   void _addTag() {
     final v = _tagCtrl.text.trim();
     if (v.isEmpty) return;
@@ -193,6 +285,18 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       appBar: AppBar(
         title: Text(_isNew ? '记一道菜' : '编辑菜谱'),
         actions: [
+          if (ocrAvailable)
+            IconButton(
+              tooltip: '从图片识别菜谱',
+              onPressed: _ocrBusy ? null : _importFromImage,
+              icon: _ocrBusy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.document_scanner_outlined),
+            ),
           TextButton(onPressed: _save, child: const Text('保存')),
         ],
       ),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_settings.dart';
 import '../../core/constants.dart';
 import '../../data/db.dart';
 import '../../main.dart';
@@ -19,7 +20,7 @@ class _RecipeListPageState extends State<RecipeListPage> {
   String _q = '';
   String? _cuisine;
   int? _maxMinutes;
-  String _sort = 'recent';
+  String _sort = appSettings.value.defaultSort;
 
   @override
   void dispose() {

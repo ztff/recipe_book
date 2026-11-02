@@ -60,6 +60,10 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }
@@ -73,3 +77,10 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // ML Kit 的文字识别模型是按语言拆分的可选依赖：
+    // 插件默认只带拉丁语系，中文/日文等需要显式引入，否则 R8 会报 Missing class。
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+}
+

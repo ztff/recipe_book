@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'core/app_settings.dart';
 import 'core/theme.dart';
 import 'features/recipes/recipe_list_page.dart';
 import 'features/settings/settings_page.dart';
@@ -10,13 +11,23 @@ class RecipeApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '我的食谱',
-      debugShowCheckedModeBanner: false,
-      theme: buildTheme(Brightness.light),
-      darkTheme: buildTheme(Brightness.dark),
-      themeMode: ThemeMode.system,
-      home: const HomeShell(),
+    return ValueListenableBuilder<AppSettings>(
+      valueListenable: appSettings,
+      builder: (context, s, _) => MaterialApp(
+        title: '我的食谱',
+        debugShowCheckedModeBanner: false,
+        theme: buildTheme(Brightness.light, seed: s.seedColor),
+        darkTheme: buildTheme(Brightness.dark, seed: s.seedColor),
+        themeMode: s.flutterMode,
+        builder: (context, child) {
+          final mq = MediaQuery.of(context);
+          return MediaQuery(
+            data: mq.copyWith(textScaler: TextScaler.linear(s.textScale)),
+            child: child ?? const SizedBox.shrink(),
+          );
+        },
+        home: const HomeShell(),
+      ),
     );
   }
 }

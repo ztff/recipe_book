@@ -7,7 +7,9 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/app_settings.dart';
 import '../../core/paths.dart';
+import '../../core/theme.dart';
 import '../../data/backup.dart';
 import '../../data/seed.dart';
 import '../../main.dart';
@@ -37,6 +39,11 @@ class _SettingsPageState extends State<SettingsPage> {
     } catch (_) {
       // 读不到版本号不影响其他功能
     }
+  }
+
+  void _apply(AppSettings next) {
+    updateSettings(next);
+    setState(() {});
   }
 
   void _snack(String msg) {
@@ -148,6 +155,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final s = appSettings.value;
     // 导入后数据库句柄已关闭，此时不能再查询，直接给重启提示页
     if (_needsRestart) {
       return Scaffold(
@@ -255,6 +263,136 @@ class _SettingsPageState extends State<SettingsPage> {
                   onTap: _busy ? null : _wipe,
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text('外观', style: Theme.of(context).textTheme.titleMedium),
+          Card(
+            color: scheme.surfaceContainerLow,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                  child: Text('主题模式', style: TextStyle(color: scheme.onSurfaceVariant)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                  child: SegmentedButton<AppThemeMode>(
+                    showSelectedIcon: false,
+                    segments: const [
+                      ButtonSegment(value: AppThemeMode.system, label: Text('跟随系统')),
+                      ButtonSegment(value: AppThemeMode.light, label: Text('浅色')),
+                      ButtonSegment(value: AppThemeMode.dark, label: Text('深色')),
+                    ],
+                    selected: {s.themeMode},
+                    onSelectionChanged: (v) => _apply(s.copyWith(themeMode: v.first)),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+                  child: Text('主题色',
+                      style: TextStyle(color: scheme.onSurfaceVariant)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: [
+                      for (var i = 0; i < kSeedColors.length; i++)
+                        Tooltip(
+                          message: kSeedColors[i].$2,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(20),
+                            onTap: () => _apply(s.copyWith(seedIndex: i)),
+                            child: Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: kSeedColors[i].$1,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  width: s.seedIndex == i ? 3 : 0,
+                                  color: scheme.onSurface,
+                                ),
+                              ),
+                              child: s.seedIndex == i
+                                  ? const Icon(Icons.check, size: 18, color: Colors.white)
+                                  : null,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.format_size),
+                  title: Text('字号  ' + (s.textScale * 100).round().toString() + '%'),
+                  subtitle: Slider(
+                    value: s.textScale,
+                    min: 0.85,
+                    max: 1.35,
+                    divisions: 10,
+                    label: (s.textScale * 100).round().toString() + '%',
+                    onChanged: (v) => _apply(s.copyWith(textScale: v)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text('烹饪模式', style: Theme.of(context).textTheme.titleMedium),
+          Card(
+            color: scheme.surfaceContainerLow,
+            child: Column(
+              children: [
+                SwitchListTile(
+                  secondary: const Icon(Icons.screen_lock_portrait_outlined),
+                  title: const Text('保持屏幕常亮'),
+                  subtitle: const Text('做菜时不让屏幕自动熄灭'),
+                  value: s.keepAwake,
+                  onChanged: (v) => _apply(s.copyWith(keepAwake: v)),
+                ),
+                SwitchListTile(
+                  secondary: const Icon(Icons.volume_up_outlined),
+                  title: const Text('计时到点响提示音'),
+                  value: s.timerSound,
+                  onChanged: (v) => _apply(s.copyWith(timerSound: v)),
+                ),
+                SwitchListTile(
+                  secondary: const Icon(Icons.vibration),
+                  title: const Text('计时到点震动'),
+                  subtitle: const Text('手机端生效'),
+                  value: s.timerVibrate,
+                  onChanged: (v) => _apply(s.copyWith(timerVibrate: v)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text('菜谱列表', style: Theme.of(context).textTheme.titleMedium),
+          Card(
+            color: scheme.surfaceContainerLow,
+            child: ListTile(
+              leading: const Icon(Icons.sort),
+              title: const Text('默认排序'),
+              subtitle: Text(kSortOptions
+                  .firstWhere((o) => o.$1 == s.defaultSort,
+                      orElse: () => kSortOptions.first)
+                  .$2),
+              trailing: DropdownButton<String>(
+                value: s.defaultSort,
+                underline: const SizedBox.shrink(),
+                items: [
+                  for (final o in kSortOptions)
+                    DropdownMenuItem(value: o.$1, child: Text(o.$2)),
+                ],
+                onChanged: (v) {
+                  if (v != null) _apply(s.copyWith(defaultSort: v));
+                },
+              ),
             ),
           ),
           const SizedBox(height: 20),

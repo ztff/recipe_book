@@ -8,9 +8,9 @@ import 'package:path/path.dart' as p;
 import 'paths.dart';
 
 /// 选图并复制进应用私有目录，返回文件名（不含路径）。
-Future<String?> pickAndStoreImage({bool fromCamera = false}) async {
-  List<int>? bytes;
-  String srcPath;
+Future<String?> pickAndStoreImage({bool fromCamera = false, File? prePicked}) async {
+  if (prePicked != null) return _store(prePicked);
+  String? srcPath;
   if (Platform.isAndroid || Platform.isIOS) {
     final file = await ImagePicker().pickImage(
       source: fromCamera ? ImageSource.camera : ImageSource.gallery,
@@ -18,7 +18,6 @@ Future<String?> pickAndStoreImage({bool fromCamera = false}) async {
       imageQuality: 85,
     );
     if (file == null) return null;
-    bytes = await file.readAsBytes();
     srcPath = file.path;
   } else {
     final res = await FilePicker.pickFiles(
@@ -26,13 +25,16 @@ Future<String?> pickAndStoreImage({bool fromCamera = false}) async {
       type: FileType.image,
     );
     if (res.isEmpty) return null;
-    final path = res.first.path;
-    if (path == null) return null;
-    bytes = await File(path).readAsBytes();
-    srcPath = path;
+    srcPath = res.first.path;
   }
+  if (srcPath == null) return null;
+  return _store(File(srcPath));
+}
+
+Future<String?> _store(File source) async {
+  final bytes = await source.readAsBytes();
   final stamp = DateTime.now().millisecondsSinceEpoch.toString();
-  final ext = p.extension(srcPath).isEmpty ? '.jpg' : p.extension(srcPath).toLowerCase();
+  final ext = p.extension(source.path).isEmpty ? '.jpg' : p.extension(source.path).toLowerCase();
   final name = stamp + ext;
   final dest = File(p.join(appImageDir.path, name));
   await dest.writeAsBytes(bytes, flush: true);

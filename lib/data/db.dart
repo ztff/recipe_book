@@ -283,10 +283,27 @@ class AppDb {
         checked INTEGER NOT NULL DEFAULT 0,
         sort_group INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_ing_recipe ON ingredients(recipe_id);
       CREATE INDEX IF NOT EXISTS idx_step_recipe ON steps(recipe_id);
       CREATE INDEX IF NOT EXISTS idx_log_recipe ON cook_logs(recipe_id);
     ''');
+  }
+
+  String? getSetting(String key) {
+    final rows = _db.select('SELECT value FROM app_settings WHERE key = ?', [key]);
+    return rows.isEmpty ? null : rows.first['value'] as String;
+  }
+
+  void setSetting(String key, String value) {
+    _db.execute(
+      'INSERT INTO app_settings(key, value) VALUES(?, ?) '
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      [key, value],
+    );
   }
 
   void _ping() {

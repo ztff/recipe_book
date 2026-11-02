@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import 'app.dart';
+import 'core/app_settings.dart';
 import 'core/paths.dart';
 import 'core/theme.dart';
 import 'data/db.dart';
@@ -37,6 +38,8 @@ Future<void> main() async {
     _log('db opened at ' + (appDb.dbFilePath ?? '?'));
     final seeded = await ensureSeed(appDb);
     _log('seed=' + seeded.toString());
+    loadSettings();
+    _log('settings loaded');
     runApp(const RecipeApp());
     _log('runApp called');
   } catch (e, st) {

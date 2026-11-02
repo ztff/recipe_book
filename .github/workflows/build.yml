@@ -141,16 +141,19 @@ jobs:
 
       - name: 生成发布说明
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           {
-            cat .github/release-body.md
-            echo "## 本次提交"
+            echo "## v${VERSION} 更新内容"
             echo
-            git log -5 --pretty=format:'- %s'
-            echo
+            if grep -q "^## ${VERSION}$" CHANGELOG.md; then
+              awk -v v="${VERSION}" '/^## /{ if (found) exit; if ($2 == v) { found=1; next } } found' CHANGELOG.md
+            else
+              echo "（CHANGELOG.md 里没有 ${VERSION} 的条目）"
+            fi
             echo
             echo "---"
             echo
-            echo "构建产物由 GitHub Actions 自动生成，签名指纹见下方校验方式。"
+            cat .github/release-body.md
           } > release-notes.md
           cat release-notes.md
 

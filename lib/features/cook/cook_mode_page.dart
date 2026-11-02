@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../../core/app_settings.dart';
 import '../../data/db.dart';
 import '../../main.dart';
 
@@ -29,7 +30,7 @@ class _CookModePageState extends State<CookModePage> {
   @override
   void initState() {
     super.initState();
-    WakelockPlus.enable();
+    if (appSettings.value.keepAwake) WakelockPlus.enable();
     WidgetsBinding.instance.addPostFrameCallback((_) => _focus.requestFocus());
   }
 
@@ -83,8 +84,9 @@ class _CookModePageState extends State<CookModePage> {
   }
 
   void _alarm() {
-    HapticFeedback.heavyImpact();
-    SystemSound.play(SystemSoundType.alert);
+    final s = appSettings.value;
+    if (s.timerVibrate) HapticFeedback.heavyImpact();
+    if (s.timerSound) SystemSound.play(SystemSoundType.alert);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('这一步的时间到了'), duration: Duration(seconds: 4)),
