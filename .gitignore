@@ -58,3 +58,8 @@ startup.log
 # 打包产物
 /build/
 dist/
+
+# 签名材料（绝不入库）
+*.jks
+*.keystore
+key.properties

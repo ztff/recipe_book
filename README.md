@@ -1,5 +1,9 @@
 # 我的食谱 · Recipe Book
 
+[![build](https://github.com/ztff/recipe_book/actions/workflows/build.yml/badge.svg)](https://github.com/ztff/recipe_book/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/ztff/recipe_book)](https://github.com/ztff/recipe_book/releases)
+[![license](https://img.shields.io/github/license/ztff/recipe_book)](LICENSE)
+
 一款**完全离线**的本地菜谱应用：结构化食材、拼音首字母搜索、烹饪模式计时、采购清单自动合并。
 一套 Flutter 代码同时构建 **Android** 与 **Windows 桌面**，无网络权限、无账号、无云同步，所有数据只存在你自己的设备上。
 
@@ -98,6 +102,33 @@ test/widget_test.dart              合并算法与格式化的单元测试
 - 步骤排序使用上/下移按钮（拖动排序需要整页重构为 `ReorderableListView`）
 - 导入备份后需重启应用才会读到新数据库（导入会关闭当前连接句柄）
 - 首次进入时若无可用 GPU，Windows 版会因 Impeller 不支持软件渲染而启动失败
+
+## 发布与签名
+
+Release 里的 APK 使用项目自有的 keystore 签名（证书 `CN=YG, O=ztff`）。签名材料不入库：
+`android/key.properties` 与 `*.jks` 均已写入 `.gitignore`。
+
+CI（`.github/workflows/build.yml`）在推送 `v*` 标签时自动：
+
+1. `flutter analyze` + `flutter test`
+2. 构建 3 个 ABI 的 APK（用仓库 Secrets 里的 keystore 签名）
+3. 构建 Windows 版并压缩成 zip
+4. 用 `softprops/action-gh-release` 建 Release 并上传全部产物
+
+需要的仓库 Secrets：
+
+| 名称 | 内容 |
+| --- | --- |
+| `KEYSTORE_BASE64` | `base64 -w0 android/app/release-keystore.jks` 的输出 |
+| `KEYSTORE_PASSWORD` | keystore 密码 |
+| `KEY_PASSWORD` | key 密码 |
+| `KEY_ALIAS` | key 别名（本项目为 `recipe`） |
+
+Fork 后没配这些 Secrets 时，构建自动回退到 debug 签名（对应步骤会跳过），你自己的 fork 也能正常出包，
+只是不能覆盖安装官方包。
+
+**版本号规则**：`pubspec.yaml` 里的 `version: 1.0.1+2`，`+`
+前是 versionName、后面是 Android versionCode；升级必须让 versionCode 递增，否则手机上无法覆盖安装。
 
 ## 贡献
 
