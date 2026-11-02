@@ -56,10 +56,10 @@ jobs:
           printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release-keystore.jks\n' \
             "$KEYSTORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > android/key.properties
         env:
-          KEYSTORE_BASE64: \u0024{{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: \u0024{{ secrets.KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: \u0024{{ secrets.KEY_PASSWORD }}
-          KEY_ALIAS: \u0024{{ secrets.KEY_ALIAS }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
 
       - run: flutter pub get
       - run: flutter build apk --release --split-per-abi
