@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -265,13 +266,14 @@ class _CookModePageState extends State<CookModePage> {
                 ],
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                '↑↓ 或 ←→ 翻步 · 空格 计时 · Esc 结束',
-                style: TextStyle(fontSize: 11, color: scheme.outline),
+            if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '↑↓ 或 ←→ 翻步 · 空格 计时 · Esc 结束',
+                  style: TextStyle(fontSize: 11, color: scheme.outline),
+                ),
               ),
-            ),
           ],
         ),
       ),

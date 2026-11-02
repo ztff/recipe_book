@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -20,6 +21,22 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   bool _busy = false;
   bool _needsRestart = false;
+  String _version = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) setState(() => _version = info.version);
+    } catch (_) {
+      // 读不到版本号不影响其他功能
+    }
+  }
 
   void _snack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -205,7 +222,7 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('我的食谱 v1.0.0'),
+                  Text(_version.isEmpty ? '我的食谱' : '我的食谱 v' + _version),
                   const SizedBox(height: 6),
                   Text('完全离线：不联网、无账号、无上传。所有菜谱、照片与记录都只保存在这台设备上。',
                       style: TextStyle(color: scheme.onSurfaceVariant, height: 1.45)),

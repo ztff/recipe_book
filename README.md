@@ -7,7 +7,30 @@
 一款**完全离线**的本地菜谱应用：结构化食材、拼音首字母搜索、烹饪模式计时、采购清单自动合并。
 一套 Flutter 代码同时构建 **Android** 与 **Windows 桌面**，无网络权限、无账号、无云同步，所有数据只存在你自己的设备上。
 
-![桌面端界面（深色主题）](docs/screenshots/desktop-dark.png)
+<p align="center">
+  <img src="docs/screenshots/android-list.png" width="24%" alt="菜谱列表">
+  <img src="docs/screenshots/android-detail.png" width="24%" alt="菜谱详情">
+  <img src="docs/screenshots/android-cook.png" width="24%" alt="烹饪模式">
+  <img src="docs/screenshots/android-shopping.png" width="24%" alt="采购清单">
+</p>
+<p align="center">
+  <sub>Android：菜谱列表 · 详情页 · 烹饪模式 · 采购清单</sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/android-dark.png" width="24%" alt="深色主题">
+  <img src="docs/screenshots/android-settings.png" width="24%" alt="设置与整库备份">
+</p>
+<p align="center">
+  <sub>深色主题（跟随系统）· 设置与整库备份</sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/desktop-dark.png" width="88%" alt="Windows 桌面端（深色主题）">
+</p>
+<p align="center">
+  <sub>Windows 桌面端：宽屏时切换为左侧导航栏，支持 ↑↓ / 空格 / Esc 快捷键</sub>
+</p>
 
 ## 特性
 

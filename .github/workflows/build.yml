@@ -132,12 +132,30 @@ jobs:
     needs: [android, windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+
+      - name: 生成发布说明
+        run: |
+          {
+            cat .github/release-body.md
+            echo "## 本次提交"
+            echo
+            git log -5 --pretty=format:'- %s'
+            echo
+            echo
+            echo "---"
+            echo
+            echo "构建产物由 GitHub Actions 自动生成，签名指纹见下方校验方式。"
+          } > release-notes.md
+          cat release-notes.md
+
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: release-notes.md
           draft: false
