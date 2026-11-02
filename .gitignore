@@ -63,3 +63,4 @@ dist/
 *.jks
 *.keystore
 key.properties
+docs/screenshots/tmp-*.png
