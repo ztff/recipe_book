@@ -11,6 +11,11 @@ on:
 permissions:
   contents: write
 
+# 同一 ref 的新推送会取消旧运行；tag 与分支的 ref 不同，互不干扰
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Flutter Gradle 插件会要求这个版本的 NDK；预装可以跳过它那张不靠谱的自动安装。
   NDK_VERSION: '28.2.13676358'
