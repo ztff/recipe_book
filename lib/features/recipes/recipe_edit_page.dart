@@ -64,6 +64,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
   final List<_StepEdit> _steps = [];
   bool _loading = true;
   bool _ocrBusy = false;
+  String _ocrStatus = '';
 
   bool get _isNew => widget.recipeId == null;
 
@@ -133,13 +134,55 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     setState(() => _imagePath = name);
   }
 
+  Future<void> _showRawText(String text, {bool downscaled = false}) async {
+    final lines = text.split('\n').length;
+    await showDialog<void>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('识别到的原始文字'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 340,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (downscaled) ...[
+                Text(
+                  '图很长，已压缩识别；如有漏字，分两段截会更准',
+                  style: TextStyle(fontSize: 12, color: Theme.of(c).colorScheme.error),
+                ),
+                const SizedBox(height: 8),
+              ],
+              Expanded(
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    text,
+                    style: const TextStyle(fontSize: 13, height: 1.4),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: text));
+              if (c.mounted) Navigator.pop(c);
+              _snack('已复制 ' + lines.toString() + ' 行到剪贴板');
+            },
+            child: const Text('复制全部'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('关闭')),
+        ],
+      ),
+    );
+  }
+
   Future<File?> _pickSourceImage() async {
     if (Platform.isAndroid || Platform.isIOS) {
-      final f = await ImagePicker().pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 2200,
-        imageQuality: 90,
-      );
+      // 不压缩：长截图被压扁后字就没了，交给切片识别去处理高度
+      final f = await ImagePicker().pickImage(source: ImageSource.gallery);
       if (f == null) return null;
       return File(f.path);
     }
@@ -152,19 +195,39 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
   }
 
   Future<void> _importFromImage() async {
-    setState(() => _ocrBusy = true);
+    setState(() {
+      _ocrBusy = true;
+      _ocrStatus = '正在准备图片';
+    });
     try {
       final file = await _pickSourceImage();
       if (file == null) {
         setState(() => _ocrBusy = false);
         return;
       }
-      final text = await recognizeText(file);
+      if (mounted) setState(() => _ocrStatus = '正在读取图片…');
+      final result = await recognizeText(
+        file,
+        onProgress: (done, total) {
+          if (mounted) setState(() => _ocrStatus = '正在识别 ' + done.toString() + '/' + total.toString());
+        },
+      );
+      final text = result?.text;
       if (text == null) {
         if (!mounted) return;
-        setState(() => _ocrBusy = false);
+        setState(() {
+          _ocrBusy = false;
+          _ocrStatus = '';
+        });
         _snack('没读到文字，换张更清晰的图（正对、光足、别糊）');
         return;
+      }
+      if (mounted) {
+        setState(() {
+          _ocrBusy = false;
+          _ocrStatus = '';
+        });
+        await _showRawText(text, downscaled: result?.downscaled ?? false);
       }
       final parsed = parseRecipeText(text);
       if (parsed.isEmpty) {
@@ -174,7 +237,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         return;
       }
       // 图片同时存为封面，省得再选一次
-      final stored = await pickAndStoreImage(prePicked: file);
+      final stored = await pickAndStoreImage(prePicked: file, preserveSize: true);
 
       if (!mounted) return;
       setState(() {
@@ -207,6 +270,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         if (_steps.isEmpty) _steps.add(_StepEdit());
         if (stored != null) _imagePath = stored;
         _ocrBusy = false;
+        _ocrStatus = '';
       });
       _snack('识别到 '
           + parsed.ingredients.length.toString()
@@ -303,6 +367,35 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
         children: [
+          if (_ocrBusy) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: scheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: scheme.onSecondaryContainer,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _ocrStatus.isEmpty ? '正在识别…' : _ocrStatus,
+                      style: TextStyle(color: scheme.onSecondaryContainer),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           GestureDetector(
             onTap: _pickImage,
             child: Container(

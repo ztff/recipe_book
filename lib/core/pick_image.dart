@@ -8,14 +8,19 @@ import 'package:path/path.dart' as p;
 import 'paths.dart';
 
 /// 选图并复制进应用私有目录，返回文件名（不含路径）。
-Future<String?> pickAndStoreImage({bool fromCamera = false, File? prePicked}) async {
+Future<String?> pickAndStoreImage({
+  bool fromCamera = false,
+  File? prePicked,
+  bool preserveSize = false,
+}) async {
   if (prePicked != null) return _store(prePicked);
   String? srcPath;
   if (Platform.isAndroid || Platform.isIOS) {
     final file = await ImagePicker().pickImage(
       source: fromCamera ? ImageSource.camera : ImageSource.gallery,
-      maxWidth: 1800,
-      imageQuality: 85,
+      // 长截图做文字识别时不能被压缩，否则字会被缩糊
+      maxWidth: preserveSize ? null : 1800,
+      imageQuality: preserveSize ? null : 85,
     );
     if (file == null) return null;
     srcPath = file.path;
