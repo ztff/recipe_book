@@ -64,3 +64,4 @@ dist/
 *.keystore
 key.properties
 docs/screenshots/tmp-*.png
+ocr_dump.txt
