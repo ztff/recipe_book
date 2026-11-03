@@ -372,6 +372,18 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(height: 20),
+          Text('截图识别', style: Theme.of(context).textTheme.titleMedium),
+          Card(
+            color: scheme.surfaceContainerLow,
+            child: SwitchListTile(
+              secondary: const Icon(Icons.auto_awesome_outlined),
+              title: const Text('高精度识别'),
+              subtitle: const Text('同一块区域用两种尺寸各认一次再挑更像菜谱的；更准，但长图要等两倍时间'),
+              value: s.ocrHighAccuracy,
+              onChanged: (v) => _apply(s.copyWith(ocrHighAccuracy: v)),
+            ),
+          ),
+          const SizedBox(height: 20),
           Text('菜谱列表', style: Theme.of(context).textTheme.titleMedium),
           Card(
             color: scheme.surfaceContainerLow,

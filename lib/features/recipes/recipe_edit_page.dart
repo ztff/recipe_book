@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/app_settings.dart';
 import '../../core/constants.dart';
 import '../../core/ocr.dart';
 import '../../core/paths.dart';
@@ -28,6 +29,20 @@ class _IngEdit {
     nameCtrl.dispose();
     qtyCtrl.dispose();
   }
+}
+
+class _ImportEdit {
+  const _ImportEdit({
+    required this.name,
+    required this.description,
+    required this.ingredients,
+    required this.steps,
+  });
+
+  final String name;
+  final String description;
+  final String ingredients;
+  final String steps;
 }
 
 class _StepEdit {
@@ -214,6 +229,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
 
       final layout = await recognizeLayout(
         file,
+        highAccuracy: appSettings.value.ocrHighAccuracy,
         onProgress: (done, total) {
           if (mounted) {
             setState(() => _ocrStatus =
@@ -260,40 +276,48 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         _ocrStatus = '';
       });
 
-      final name = await _askImportName(parsed);
-      if (name == null) {
+      final edited = await _askConfirmImport(parsed);
+      if (edited == null) {
         _snack('已取消导入');
         return;
       }
 
       setState(() {
-        if (name.isNotEmpty && _nameCtrl.text.trim().isEmpty) {
-          _nameCtrl.text = name;
+        if (edited.name.isNotEmpty && _nameCtrl.text.trim().isEmpty) {
+          _nameCtrl.text = edited.name;
         }
-        if (parsed.description != null && _descCtrl.text.trim().isEmpty) {
-          _descCtrl.text = parsed.description!;
+        if (edited.description.isNotEmpty && _descCtrl.text.trim().isEmpty) {
+          _descCtrl.text = edited.description;
         }
-        if (parsed.ingredients.isNotEmpty) {
-          for (final i in _ings) {
-            i.dispose();
-          }
-          _ings.clear();
-          for (final i in parsed.ingredients) {
-            _ings.add(_IngEdit(
-              name: i.name,
-              qty: i.qty == null ? '' : _trimNum(i.qty!),
-              unit: i.unit ?? '克',
-            ));
-          }
+        for (final i in _ings) {
+          i.dispose();
         }
-        if (parsed.steps.isNotEmpty) {
-          for (final s in _steps) {
-            s.dispose();
-          }
-          _steps.clear();
-          for (var i = 0; i < parsed.steps.length; i++) {
-            _steps.add(_StepEdit(text: parsed.steps[i].text, imagePath: crops[i]));
-          }
+        _ings.clear();
+        for (final line in edited.ingredients.split('\n')) {
+          final t = line.trim();
+          if (t.isEmpty) continue;
+          final parts = t.split(RegExp(r'\s+'));
+          final qty = parts.length > 1 ? double.tryParse(parts[1]) : null;
+          _ings.add(_IngEdit(
+            name: parts.first,
+            qty: qty == null ? '' : _trimNum(qty),
+            unit: parts.length > 2 && parts[2].isNotEmpty ? parts[2] : '克',
+          ));
+        }
+        for (final s in _steps) {
+          s.dispose();
+        }
+        _steps.clear();
+        final blocks = edited.steps
+            .split(RegExp(r'\n\s*\n'))
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
+        for (var i = 0; i < blocks.length; i++) {
+          _steps.add(_StepEdit(
+            text: blocks[i],
+            imagePath: i < crops.length ? crops[i] : null,
+          ));
         }
         if (_ings.isEmpty) _ings.add(_IngEdit());
         if (_steps.isEmpty) _steps.add(_StepEdit());
@@ -326,45 +350,101 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     return ok ? name : null;
   }
 
-  Future<String?> _askImportName(ScreenRecipe parsed) async {
-    final ctrl = TextEditingController(text: parsed.name ?? '');
+  Future<_ImportEdit?> _askConfirmImport(ScreenRecipe parsed) async {
+    final nameCtrl = TextEditingController(text: parsed.name ?? '');
+    final descCtrl = TextEditingController(text: parsed.description ?? '');
+    final ingCtrl = TextEditingController(
+      text: parsed.ingredients
+          .map((i) {
+            final q = i.qty == null ? '' : _trimNum(i.qty!);
+            return [i.name, q, i.unit ?? ''].where((e) => e.isNotEmpty).join(' ');
+          })
+          .join('\n'),
+    );
+    final stepCtrl = TextEditingController(
+      text: parsed.steps.map((s) => s.text).join('\n\n'),
+    );
     final notes = <String>[
       parsed.summary,
       if (parsed.droppedLines > 0)
         '已跳过 ' + parsed.droppedLines.toString() + ' 行广告/界面文字',
       if (!parsed.nameConfident && (parsed.name?.isNotEmpty ?? false))
         '菜名是从标题原样取的，改一下更准',
+      '用料一行一条：名称 数量 单位；步骤之间空一行',
     ];
-    final result = await showDialog<String>(
+    final result = await showDialog<_ImportEdit>(
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('确认导入'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: ctrl,
-              decoration: const InputDecoration(labelText: '菜名'),
-            ),
-            const SizedBox(height: 12),
-            for (final n in notes)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(n, style: const TextStyle(fontSize: 12)),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 430,
+          child: ListView(
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(labelText: '菜名'),
               ),
-          ],
+              const SizedBox(height: 10),
+              TextField(
+                controller: descCtrl,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: '说明',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ingCtrl,
+                minLines: 4,
+                maxLines: 8,
+                decoration: const InputDecoration(
+                  labelText: '用料',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: stepCtrl,
+                minLines: 6,
+                maxLines: null,
+                decoration: const InputDecoration(
+                  labelText: '步骤',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              for (final n in notes)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(n, style: const TextStyle(fontSize: 12)),
+                ),
+            ],
+          ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
           FilledButton(
-            onPressed: () => Navigator.pop(c, ctrl.text.trim()),
+            onPressed: () => Navigator.pop(
+              c,
+              _ImportEdit(
+                name: nameCtrl.text.trim(),
+                description: descCtrl.text.trim(),
+                ingredients: ingCtrl.text,
+                steps: stepCtrl.text,
+              ),
+            ),
             child: const Text('填入'),
           ),
         ],
       ),
     );
-    ctrl.dispose();
+    nameCtrl.dispose();
+    descCtrl.dispose();
+    ingCtrl.dispose();
+    stepCtrl.dispose();
     return result;
   }
 

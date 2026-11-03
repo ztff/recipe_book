@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'ocr.dart';
+import 'vocab.dart';
 
 /// 从手机长截图里解析出来的一道菜。
 class ScreenRecipe {
@@ -203,12 +204,18 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
   }
 
   return ScreenRecipe(
-    name: name,
+    name: name == null ? null : fixTypos(name),
     nameConfident: nameConfident,
-    description: description,
-    ingredients: ingredients,
-    steps: steps,
-    tips: tips,
+    description: description == null ? null : fixTypos(description),
+    ingredients: [
+      for (final i in ingredients)
+        ScreenIngredient(name: fixTypos(i.name), qty: i.qty, unit: i.unit),
+    ],
+    steps: [
+      for (final s in steps)
+        ScreenStep(text: fixTypos(s.text), imageRect: s.imageRect),
+    ],
+    tips: tips == null ? null : fixTypos(tips),
     droppedLines: dropped,
   );
 }

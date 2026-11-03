@@ -5,6 +5,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
+import 'vocab.dart';
+
 /// ML Kit 只在 Android / iOS 提供离线模型；桌面端返回 false，入口会被隐藏。
 bool get ocrAvailable {
   if (kIsWeb) return false;
@@ -79,6 +81,7 @@ class OcrText {
 Future<OcrLayout?> recognizeLayout(
   File image, {
   OcrProgress? onProgress,
+  bool highAccuracy = true,
 }) async {
   if (!ocrAvailable) return null;
   ui.Codec? codec;
@@ -120,8 +123,13 @@ Future<OcrLayout?> recognizeLayout(
     var top = 0;
     while (top < source.height) {
       final h = math.min(_tileHeight, source.height - top);
-      final tile = await _cropToPng(source, top, h);
-      final lines = await _recognizePng(recognizer, tile, top.toDouble());
+      final lines = highAccuracy
+          ? await _recognizeTileVoted(recognizer, source, top, h)
+          : await _recognizePng(
+              recognizer,
+              await _cropToPng(source, top, h),
+              top.toDouble(),
+            );
       all.addAll(lines);
       done++;
       onProgress?.call(math.min(done, total), total);
@@ -190,11 +198,75 @@ Future<List<OcrLine>> _recognizeImage(
   return _recognizePng(rec, png, yOffset);
 }
 
+/// 同一片用原始尺寸和放大 1.6 倍各认一次，再按「像不像菜谱用词」投票。
+Future<List<OcrLine>> _recognizeTileVoted(
+  TextRecognizer rec,
+  ui.Image src,
+  int top,
+  int height,
+) async {
+  final normal = await _recognizePng(rec, await _cropToPng(src, top, height), top.toDouble());
+  if (normal.isEmpty) return normal;
+  try {
+    const scale = 1.6;
+    final scaled = await _cropToPngScaled(src, top, height, scale);
+    final bigger = await _recognizePng(
+      rec,
+      scaled,
+      top.toDouble(),
+      scale: scale,
+    );
+    return _vote(normal, bigger);
+  } catch (e) {
+    debugPrint('ocr vote skipped: ' + e.toString());
+    return normal;
+  }
+}
+
+List<OcrLine> _vote(List<OcrLine> a, List<OcrLine> b) {
+  if (b.isEmpty) return a;
+  if (a.isEmpty) return b;
+  final out = <OcrLine>[];
+  final used = <int>{};
+  for (final la in a) {
+    var bestIndex = -1;
+    var bestDelta = 46.0;
+    for (var i = 0; i < b.length; i++) {
+      if (used.contains(i)) continue;
+      final d = (b[i].top - la.top).abs();
+      if (d < bestDelta) {
+        bestDelta = d;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0) {
+      out.add(la);
+      continue;
+    }
+    used.add(bestIndex);
+    final lb = b[bestIndex];
+    // 只有明显更像中文才换，避免投票反而改坏
+    final pick = vocabScore(lb.text) - vocabScore(la.text) >= 4 ? lb : la;
+    out.add(OcrLine(
+      text: pick.text,
+      top: la.top,
+      bottom: la.bottom,
+      left: la.left,
+      right: la.right,
+    ));
+  }
+  for (var i = 0; i < b.length; i++) {
+    if (!used.contains(i)) out.add(b[i]);
+  }
+  return out;
+}
+
 Future<List<OcrLine>> _recognizePng(
   TextRecognizer rec,
   Uint8List png,
-  double yOffset,
-) async {
+  double yOffset, {
+  double scale = 1.0,
+}) async {
   final path = Directory.systemTemp.path +
       '/ocr_' +
       DateTime.now().microsecondsSinceEpoch.toString() +
@@ -211,10 +283,10 @@ Future<List<OcrLine>> _recognizePng(
         if (text.isEmpty) continue;
         lines.add(OcrLine(
           text: text,
-          top: box.top + yOffset,
-          bottom: box.bottom + yOffset,
-          left: box.left,
-          right: box.right,
+          top: box.top / scale + yOffset,
+          bottom: box.bottom / scale + yOffset,
+          left: box.left / scale,
+          right: box.right / scale,
         ));
       }
     }
@@ -237,6 +309,32 @@ Future<Uint8List> _cropToPng(ui.Image src, int top, int height) async {
   );
   final picture = recorder.endRecording();
   final cropped = await picture.toImage(src.width, height);
+  try {
+    return await _encodePng(cropped);
+  } finally {
+    cropped.dispose();
+    picture.dispose();
+  }
+}
+
+Future<Uint8List> _cropToPngScaled(
+  ui.Image src,
+  int top,
+  int height,
+  double scale,
+) async {
+  final outW = (src.width * scale).round();
+  final outH = (height * scale).round();
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder);
+  canvas.drawImageRect(
+    src,
+    ui.Rect.fromLTWH(0, top.toDouble(), src.width.toDouble(), height.toDouble()),
+    ui.Rect.fromLTWH(0, 0, outW.toDouble(), outH.toDouble()),
+    ui.Paint()..filterQuality = ui.FilterQuality.high,
+  );
+  final picture = recorder.endRecording();
+  final cropped = await picture.toImage(outW, outH);
   try {
     return await _encodePng(cropped);
   } finally {
