@@ -313,6 +313,19 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(d.steps[i].text, style: const TextStyle(height: 1.45)),
+                    if (d.steps[i].imagePath != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.file(
+                            File(imageFullPath(d.steps[i].imagePath!)),
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                          ),
+                        ),
+                      ),
                     if (d.steps[i].timerSeconds != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),

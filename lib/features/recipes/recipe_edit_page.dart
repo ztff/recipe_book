@@ -10,7 +10,7 @@ import '../../core/ocr.dart';
 import '../../core/paths.dart';
 import '../../core/pick_image.dart';
 import '../../core/pinyin.dart';
-import '../../core/recipe_parser.dart';
+import '../../core/screenshot_parser.dart';
 import '../../data/db.dart';
 import '../../main.dart';
 
@@ -31,11 +31,12 @@ class _IngEdit {
 }
 
 class _StepEdit {
-  _StepEdit({String text = '', this.timerSeconds})
+  _StepEdit({String text = '', this.timerSeconds, this.imagePath})
       : textCtrl = TextEditingController(text: text);
 
   final TextEditingController textCtrl;
   int? timerSeconds;
+  String? imagePath;
 
   void dispose() => textCtrl.dispose();
 }
@@ -96,7 +97,11 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
           ));
         }
         for (final s in d.steps) {
-          _steps.add(_StepEdit(text: s.text, timerSeconds: s.timerSeconds));
+          _steps.add(_StepEdit(
+          text: s.text,
+          timerSeconds: s.timerSeconds,
+          imagePath: s.imagePath,
+        ));
         }
       }
     }
@@ -206,14 +211,17 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         return;
       }
       if (mounted) setState(() => _ocrStatus = '正在读取图片…');
-      final result = await recognizeText(
+
+      final layout = await recognizeLayout(
         file,
         onProgress: (done, total) {
-          if (mounted) setState(() => _ocrStatus = '正在识别 ' + done.toString() + '/' + total.toString());
+          if (mounted) {
+            setState(() => _ocrStatus =
+                '正在识别 ' + done.toString() + '/' + total.toString());
+          }
         },
       );
-      final text = result?.text;
-      if (text == null) {
+      if (layout == null) {
         if (!mounted) return;
         setState(() {
           _ocrBusy = false;
@@ -222,27 +230,48 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         _snack('没读到文字，换张更清晰的图（正对、光足、别糊）');
         return;
       }
-      if (mounted) {
+
+      final parsed = parseScreenRecipe(layout);
+      if (parsed.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _ocrBusy = false;
           _ocrStatus = '';
         });
-        await _showRawText(text, downscaled: result?.downscaled ?? false);
-      }
-      final parsed = parseRecipeText(text);
-      if (parsed.isEmpty) {
-        if (!mounted) return;
-        setState(() => _ocrBusy = false);
+        await _showRawText(layout.plainText, downscaled: layout.downscaled);
         _snack('读到了字，但没认出菜谱结构，可以手动填');
         return;
       }
-      // 图片同时存为封面，省得再选一次
+
+      // 整图先存一份到应用目录，后面裁步骤图用这份副本
       final stored = await pickAndStoreImage(prePicked: file, preserveSize: true);
+      final src = stored == null ? file : File(imageFullPath(stored));
+
+      if (mounted) setState(() => _ocrStatus = '正在裁步骤图');
+      final crops = <String?>[];
+      for (var i = 0; i < parsed.steps.length; i++) {
+        final rect = parsed.steps[i].imageRect;
+        crops.add(rect == null ? null : await _saveStepCrop(src, rect, i));
+      }
 
       if (!mounted) return;
       setState(() {
-        if (parsed.name != null && _nameCtrl.text.trim().isEmpty) {
-          _nameCtrl.text = parsed.name!;
+        _ocrBusy = false;
+        _ocrStatus = '';
+      });
+
+      final name = await _askImportName(parsed);
+      if (name == null) {
+        _snack('已取消导入');
+        return;
+      }
+
+      setState(() {
+        if (name.isNotEmpty && _nameCtrl.text.trim().isEmpty) {
+          _nameCtrl.text = name;
+        }
+        if (parsed.description != null && _descCtrl.text.trim().isEmpty) {
+          _descCtrl.text = parsed.description!;
         }
         if (parsed.ingredients.isNotEmpty) {
           for (final i in _ings) {
@@ -262,26 +291,81 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
             s.dispose();
           }
           _steps.clear();
-          for (final s in parsed.steps) {
-            _steps.add(_StepEdit(text: s));
+          for (var i = 0; i < parsed.steps.length; i++) {
+            _steps.add(_StepEdit(text: parsed.steps[i].text, imagePath: crops[i]));
           }
         }
         if (_ings.isEmpty) _ings.add(_IngEdit());
         if (_steps.isEmpty) _steps.add(_StepEdit());
         if (stored != null) _imagePath = stored;
+      });
+      _snack('已填入 ' +
+          parsed.summary +
+          (parsed.droppedLines > 0
+              ? '，跳过 ' + parsed.droppedLines.toString() + ' 行广告/界面'
+              : '') +
+          '，请逐条核对');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
         _ocrBusy = false;
         _ocrStatus = '';
       });
-      _snack('识别到 '
-          + parsed.ingredients.length.toString()
-          + ' 条食材、'
-          + parsed.steps.length.toString()
-          + ' 个步骤，请逐条核对');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _ocrBusy = false);
       _snack('识别失败：' + e.toString());
     }
+  }
+
+  Future<String?> _saveStepCrop(File source, Rect rect, int index) async {
+    final name = 'step_' +
+        DateTime.now().millisecondsSinceEpoch.toString() +
+        '_' +
+        index.toString() +
+        '.jpg';
+    final ok =
+        await cropRegionToFile(source, rect.top, rect.bottom, imageFullPath(name));
+    return ok ? name : null;
+  }
+
+  Future<String?> _askImportName(ScreenRecipe parsed) async {
+    final ctrl = TextEditingController(text: parsed.name ?? '');
+    final notes = <String>[
+      parsed.summary,
+      if (parsed.droppedLines > 0)
+        '已跳过 ' + parsed.droppedLines.toString() + ' 行广告/界面文字',
+      if (!parsed.nameConfident && (parsed.name?.isNotEmpty ?? false))
+        '菜名是从标题原样取的，改一下更准',
+    ];
+    final result = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('确认导入'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: ctrl,
+              decoration: const InputDecoration(labelText: '菜名'),
+            ),
+            const SizedBox(height: 12),
+            for (final n in notes)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(n, style: const TextStyle(fontSize: 12)),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, ctrl.text.trim()),
+            child: const Text('填入'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    return result;
   }
 
   void _addTag() {
@@ -314,7 +398,11 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     for (final s in _steps) {
       final t = s.textCtrl.text.trim();
       if (t.isEmpty) continue;
-      steps.add(DraftStep(text: t, timerSeconds: s.timerSeconds));
+      steps.add(DraftStep(
+        text: t,
+        timerSeconds: s.timerSeconds,
+        imagePath: s.imagePath,
+      ));
     }
     if (steps.isEmpty) {
       _snack('至少写一个步骤');
@@ -704,6 +792,48 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
                 border: InputBorder.none,
               ),
             ),
+            if (s.imagePath != null)
+              Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.file(
+                      File(imageFullPath(s.imagePath!)),
+                      width: double.infinity,
+                      height: 140,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    ),
+                  ),
+                  Positioned(
+                    right: 4,
+                    top: 4,
+                    child: Material(
+                      color: scheme.surface.withValues(alpha: 0.85),
+                      shape: const CircleBorder(),
+                      child: IconButton(
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.close, size: 16),
+                        tooltip: '去掉这一步的配图',
+                        onPressed: () => setState(() => s.imagePath = null),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: () => _pickStepImage(index),
+                  icon: const Icon(Icons.image_outlined, size: 16),
+                  label: Text(
+                    s.imagePath == null ? '配图' : '换图',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                const Spacer(),
+              ],
+            ),
             Wrap(
               spacing: 6,
               children: [
@@ -719,6 +849,13 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _pickStepImage(int index) async {
+    final stored = await pickAndStoreImage();
+    if (stored == null) return;
+    if (!mounted) return;
+    setState(() => _steps[index].imagePath = stored);
   }
 
   String _timerLabel(int sec) {

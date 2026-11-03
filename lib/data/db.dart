@@ -105,6 +105,7 @@ class StepRow {
     required this.position,
     required this.text,
     this.timerSeconds,
+    this.imagePath,
   });
 
   final int id;
@@ -112,6 +113,7 @@ class StepRow {
   final int position;
   final String text;
   final int? timerSeconds;
+  final String? imagePath;
 
   factory StepRow.fromRow(Row r) => StepRow(
         id: r['id'] as int,
@@ -119,6 +121,7 @@ class StepRow {
         position: (r['position'] as int?) ?? 0,
         text: r['text'] as String,
         timerSeconds: r['timer_seconds'] as int?,
+        imagePath: r['image_path'] as String?,
       );
 }
 
@@ -175,9 +178,10 @@ class DraftIngredient {
 }
 
 class DraftStep {
-  DraftStep({required this.text, this.timerSeconds});
+  DraftStep({required this.text, this.timerSeconds, this.imagePath});
   final String text;
   final int? timerSeconds;
+  final String? imagePath;
 }
 
 class RecipeDraft {
@@ -266,7 +270,8 @@ class AppDb {
         recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
         position INTEGER NOT NULL DEFAULT 0,
         text TEXT NOT NULL,
-        timer_seconds INTEGER
+        timer_seconds INTEGER,
+        image_path TEXT
       );
       CREATE TABLE IF NOT EXISTS cook_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -288,9 +293,21 @@ class AppDb {
         value TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_ing_recipe ON ingredients(recipe_id);
+    ''');
+    _ensureColumn('steps', 'image_path', 'TEXT');
+    _db.execute('''
       CREATE INDEX IF NOT EXISTS idx_step_recipe ON steps(recipe_id);
       CREATE INDEX IF NOT EXISTS idx_log_recipe ON cook_logs(recipe_id);
     ''');
+  }
+
+  /// 老库升级：表已经存在时 CREATE TABLE IF NOT EXISTS 不会补新列。
+  void _ensureColumn(String table, String column, String type) {
+    final info = _db.select('PRAGMA table_info(' + table + ')');
+    final exists = info.any((r) => (r['name'] as String?) == column);
+    if (!exists) {
+      _db.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + type);
+    }
   }
 
   String? getSetting(String key) {
@@ -418,8 +435,8 @@ class AppDb {
       for (var i = 0; i < d.steps.length; i++) {
         final s = d.steps[i];
         _db.execute(
-          'INSERT INTO steps (recipe_id, position, text, timer_seconds) VALUES (?,?,?,?)',
-          [id, i, s.text, s.timerSeconds],
+          'INSERT INTO steps (recipe_id, position, text, timer_seconds, image_path) VALUES (?,?,?,?,?)',
+          [id, i, s.text, s.timerSeconds, s.imagePath],
         );
       }
       _db.execute('COMMIT');

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../core/app_settings.dart';
+import '../../core/paths.dart';
 import '../../data/db.dart';
 import '../../main.dart';
 
@@ -186,6 +187,19 @@ class _CookModePageState extends State<CookModePage> {
                                 color: scheme.primary,
                                 fontWeight: FontWeight.w600)),
                         const SizedBox(height: 14),
+                        if (_steps[i].imagePath != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(14),
+                              child: Image.file(
+                                File(imageFullPath(_steps[i].imagePath!)),
+                                width: double.infinity,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                              ),
+                            ),
+                          ),
                         Text(
                           _steps[i].text,
                           style: const TextStyle(fontSize: 26, height: 1.55),
