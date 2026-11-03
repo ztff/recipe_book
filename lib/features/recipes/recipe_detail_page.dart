@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/paths.dart';
+import '../../widgets/indented_text.dart';
+import '../../widgets/photo_viewer.dart';
 import '../../core/pick_image.dart';
 import '../../core/units.dart';
 import '../../data/db.dart';
@@ -312,17 +314,27 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(d.steps[i].text, style: const TextStyle(height: 1.45)),
+                    IndentedText(
+                      d.steps[i].text,
+                      style: const TextStyle(height: 1.45),
+                    ),
                     if (d.steps[i].imagePath != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 8),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: Image.file(
-                            File(imageFullPath(d.steps[i].imagePath!)),
-                            width: double.infinity,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        child: GestureDetector(
+                          onTap: () => showPhotoViewer(
+                            context,
+                            imageFullPath(d.steps[i].imagePath!),
+                            caption: '第 ' + (i + 1).toString() + ' 步',
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.file(
+                              File(imageFullPath(d.steps[i].imagePath!)),
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                            ),
                           ),
                         ),
                       ),

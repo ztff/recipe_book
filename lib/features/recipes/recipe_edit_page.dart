@@ -30,20 +30,6 @@ class _IngEdit {
   }
 }
 
-class _ImportEdit {
-  const _ImportEdit({
-    required this.name,
-    required this.description,
-    required this.ingredients,
-    required this.steps,
-  });
-
-  final String name;
-  final String description;
-  final String ingredients;
-  final String steps;
-}
-
 class _StepEdit {
   _StepEdit({String text = '', this.timerSeconds, this.imagePath})
       : textCtrl = TextEditingController(text: text);
@@ -72,6 +58,14 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
   String _taste = '咸鲜';
   int _difficulty = 1;
   int _minutes = 30;
+
+  /// 预设时长 + 菜谱自己的时长。老数据里有 35、70 这种不在预设里的值，
+  /// 不补进去 DropdownButton 会因为找不到匹配项直接断言失败。
+  List<int> get _minuteOptions {
+    final list = <int>{10, 15, 20, 25, 30, 45, 60, 90, 120, 180, _minutes}.toList()
+      ..sort();
+    return list;
+  }
   int _servings = 2;
   String? _imagePath;
   final List<String> _tags = [];
@@ -131,6 +125,9 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
 
   @override
   void dispose() {
+    // 带着「撤销」的提示条属于这个页面的临时状态，页面没了就收掉，
+    // 否则返回列表后还能点，回调会打到已销毁的 State 上。
+    _messenger?.clearSnackBars();
     _nameCtrl.dispose();
     _descCtrl.dispose();
     _tagCtrl.dispose();
@@ -143,8 +140,18 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     super.dispose();
   }
 
-  void _snack(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  ScaffoldMessengerState? _messenger;
+
+  void _snack(String msg, {VoidCallback? undo}) {
+    final m = ScaffoldMessenger.of(context);
+    _messenger = m;
+    m.showSnackBar(SnackBar(
+      content: Text(msg),
+      duration: Duration(seconds: undo == null ? 4 : 8),
+      action: undo == null
+          ? null
+          : SnackBarAction(label: '撤销', onPressed: undo),
+    ));
   }
 
   Future<void> _pickImage() async {
@@ -229,10 +236,10 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       final layout = await recognizeLayout(
         file,
         onProgress: (done, total) {
-          if (mounted) {
-            setState(() => _ocrStatus =
-                '正在识别 ' + done.toString() + '/' + total.toString());
-          }
+          if (!mounted) return;
+          final pct =
+              total <= 0 ? 0 : ((done / total) * 100).clamp(0, 100).round();
+          setState(() => _ocrStatus = '正在识别 ' + pct.toString() + '%');
         },
       );
       if (layout == null) {
@@ -276,46 +283,34 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         _ocrStatus = '';
       });
 
-      final edited = await _askConfirmImport(parsed);
-      if (edited == null) {
-        _snack('已取消导入');
-        return;
-      }
+      // 直接覆盖表单，不再弹确认框；同时留一份快照给「撤销」。
+      final snapshot = _snapshotForm();
 
       setState(() {
-        if (edited.name.isNotEmpty && _nameCtrl.text.trim().isEmpty) {
-          _nameCtrl.text = edited.name;
+        if (parsed.name != null && parsed.name!.isNotEmpty) {
+          _nameCtrl.text = parsed.name!;
         }
-        if (edited.description.isNotEmpty && _descCtrl.text.trim().isEmpty) {
-          _descCtrl.text = edited.description;
+        if (parsed.description != null && parsed.description!.isNotEmpty) {
+          _descCtrl.text = parsed.description!;
         }
         for (final i in _ings) {
           i.dispose();
         }
         _ings.clear();
-        for (final line in edited.ingredients.split('\n')) {
-          final t = line.trim();
-          if (t.isEmpty) continue;
-          final parts = t.split(RegExp(r'\s+'));
-          final qty = parts.length > 1 ? double.tryParse(parts[1]) : null;
+        for (final i in parsed.ingredients) {
           _ings.add(_IngEdit(
-            name: parts.first,
-            qty: qty == null ? '' : _trimNum(qty),
-            unit: parts.length > 2 && parts[2].isNotEmpty ? parts[2] : '克',
+            name: i.name,
+            qty: i.qty == null ? '' : _trimNum(i.qty!),
+            unit: i.unit ?? (i.qty == null ? '' : '克'),
           ));
         }
         for (final s in _steps) {
           s.dispose();
         }
         _steps.clear();
-        final blocks = edited.steps
-            .split(RegExp(r'\n\s*\n'))
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList();
-        for (var i = 0; i < blocks.length; i++) {
+        for (var i = 0; i < parsed.steps.length; i++) {
           _steps.add(_StepEdit(
-            text: blocks[i],
+            text: parsed.steps[i].text,
             imagePath: i < crops.length ? crops[i] : null,
           ));
         }
@@ -323,12 +318,15 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         if (_steps.isEmpty) _steps.add(_StepEdit());
         if (stored != null) _imagePath = stored;
       });
-      _snack('已填入 ' +
-          parsed.summary +
-          (parsed.droppedLines > 0
-              ? '，跳过 ' + parsed.droppedLines.toString() + ' 行广告/界面'
-              : '') +
-          '，请逐条核对');
+      _snack(
+        '已识别 ' +
+            parsed.summary +
+            (parsed.droppedLines > 0
+                ? '，跳过 ' + parsed.droppedLines.toString() + ' 行广告/界面'
+                : '') +
+            '，检查一下再保存',
+        undo: () => _restoreForm(snapshot),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -337,6 +335,49 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       });
       _snack('识别失败：' + e.toString());
     }
+  }
+
+  /// 导入前的表单快照，用于撤销。
+  List<Object?> _snapshotForm() => [
+        _nameCtrl.text,
+        _descCtrl.text,
+        [for (final i in _ings) [i.nameCtrl.text, i.qtyCtrl.text, i.unit]],
+        [for (final s in _steps) [s.textCtrl.text, s.timerSeconds, s.imagePath]],
+        _imagePath,
+      ];
+
+  void _restoreForm(List<Object?> snap) {
+    if (!mounted) return;
+    setState(() {
+      _nameCtrl.text = snap[0] as String;
+      _descCtrl.text = snap[1] as String;
+      final ings = snap[2] as List;
+      for (final i in _ings) {
+        i.dispose();
+      }
+      _ings.clear();
+      for (final raw in ings) {
+        final v = raw as List;
+        _ings.add(_IngEdit(
+          name: v[0] as String,
+          qty: v[1] as String,
+          unit: v[2] as String,
+        ));
+      }
+      final steps = snap[3] as List;
+      for (final s in _steps) {
+        s.dispose();
+      }
+      _steps.clear();
+      for (final raw in steps) {
+        final v = raw as List;
+        _steps.add(_StepEdit(text: v[0] as String, timerSeconds: v[1] as int?, imagePath: v[2] as String?));
+      }
+      _imagePath = snap[4] as String?;
+      if (_ings.isEmpty) _ings.add(_IngEdit());
+      if (_steps.isEmpty) _steps.add(_StepEdit());
+    });
+    _snack('已还原到导入前');
   }
 
   Future<String?> _saveStepCrop(
@@ -358,104 +399,6 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       sourceHeight: sourceHeight,
     );
     return ok ? name : null;
-  }
-
-  Future<_ImportEdit?> _askConfirmImport(ScreenRecipe parsed) async {
-    final nameCtrl = TextEditingController(text: parsed.name ?? '');
-    final descCtrl = TextEditingController(text: parsed.description ?? '');
-    final ingCtrl = TextEditingController(
-      text: parsed.ingredients
-          .map((i) {
-            final q = i.qty == null ? '' : _trimNum(i.qty!);
-            return [i.name, q, i.unit ?? ''].where((e) => e.isNotEmpty).join(' ');
-          })
-          .join('\n'),
-    );
-    final stepCtrl = TextEditingController(
-      text: parsed.steps.map((s) => s.text).join('\n\n'),
-    );
-    final notes = <String>[
-      parsed.summary,
-      if (parsed.droppedLines > 0)
-        '已跳过 ' + parsed.droppedLines.toString() + ' 行广告/界面文字',
-      if (!parsed.nameConfident && (parsed.name?.isNotEmpty ?? false))
-        '菜名是从标题原样取的，改一下更准',
-      '用料一行一条：名称 数量 单位；步骤之间空一行',
-    ];
-    final result = await showDialog<_ImportEdit>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('确认导入'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 430,
-          child: ListView(
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(labelText: '菜名'),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: descCtrl,
-                minLines: 2,
-                maxLines: 4,
-                decoration: const InputDecoration(
-                  labelText: '说明',
-                  alignLabelWithHint: true,
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: ingCtrl,
-                minLines: 4,
-                maxLines: 8,
-                decoration: const InputDecoration(
-                  labelText: '用料',
-                  alignLabelWithHint: true,
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: stepCtrl,
-                minLines: 6,
-                maxLines: null,
-                decoration: const InputDecoration(
-                  labelText: '步骤',
-                  alignLabelWithHint: true,
-                ),
-              ),
-              const SizedBox(height: 12),
-              for (final n in notes)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(n, style: const TextStyle(fontSize: 12)),
-                ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-              c,
-              _ImportEdit(
-                name: nameCtrl.text.trim(),
-                description: descCtrl.text.trim(),
-                ingredients: ingCtrl.text,
-                steps: stepCtrl.text,
-              ),
-            ),
-            child: const Text('填入'),
-          ),
-        ],
-      ),
-    );
-    nameCtrl.dispose();
-    descCtrl.dispose();
-    ingCtrl.dispose();
-    stepCtrl.dispose();
-    return result;
   }
 
   void _addTag() {
@@ -667,9 +610,9 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
           Text('总用时（分钟）', style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 6),
           DropdownButtonFormField<int>(
-            initialValue: _minutes,
+            initialValue: _minuteOptions.contains(_minutes) ? _minutes : null,
             items: [
-              for (final m in const [10, 15, 20, 25, 30, 45, 60, 90, 120, 180])
+              for (final m in _minuteOptions)
                 DropdownMenuItem(value: m, child: Text(m.toString() + ' 分钟')),
             ],
             onChanged: (v) => setState(() => _minutes = v ?? 30),
@@ -927,12 +870,22 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
             Wrap(
               spacing: 6,
               children: [
-                for (final opt in const [null, 60, 180, 300, 600, 1200])
+                for (final opt in _timerPresets)
                   ChoiceChip(
                     label: Text(opt == null ? '不用计时' : _timerLabel(opt)),
                     selected: s.timerSeconds == opt,
                     onSelected: (_) => setState(() => s.timerSeconds = opt),
                   ),
+                ChoiceChip(
+                  label: Text(
+                    _isCustomTimer(s.timerSeconds)
+                        ? _timerLabel(s.timerSeconds!) + ' 自定义'
+                        : '自定义',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  selected: _isCustomTimer(s.timerSeconds),
+                  onSelected: (_) => _pickCustomTimer(index),
+                ),
               ],
             ),
           ],
@@ -946,6 +899,69 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     if (stored == null) return;
     if (!mounted) return;
     setState(() => _steps[index].imagePath = stored);
+  }
+
+  /// 常用时长；自定义的走 [ChoiceChip] 后面那个「自定义」入口。
+  static const List<int?> _timerPresets = [
+    null,
+    60,
+    120,
+    180,
+    240,
+    300,
+    600,
+    1200,
+  ];
+
+  bool _isCustomTimer(int? sec) => sec != null && !_timerPresets.contains(sec);
+
+  Future<void> _pickCustomTimer(int index) async {
+    final current = _steps[index].timerSeconds ?? 300;
+    final ctrl = TextEditingController(text: (current ~/ 60).toString());
+    final secCtrl = TextEditingController(
+      text: (current % 60).toString().padLeft(2, '0'),
+    );
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('自定义计时'),
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Expanded(
+              child: TextField(
+                controller: ctrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: '分'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextField(
+                controller: secCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: '秒'),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final m = int.tryParse(ctrl.text.trim()) ?? 0;
+    final s = int.tryParse(secCtrl.text.trim()) ?? 0;
+    final total = (m * 60 + s).clamp(5, 180 * 60);
+    if (mounted) setState(() => _steps[index].timerSeconds = total);
   }
 
   String _timerLabel(int sec) {

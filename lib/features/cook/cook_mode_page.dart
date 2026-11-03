@@ -7,6 +7,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../core/app_settings.dart';
 import '../../core/paths.dart';
+import '../../widgets/indented_text.dart';
+import '../../widgets/photo_viewer.dart';
 import '../../data/db.dart';
 import '../../main.dart';
 
@@ -190,19 +192,28 @@ class _CookModePageState extends State<CookModePage> {
                         if (_steps[i].imagePath != null)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 16),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(14),
-                              child: Image.file(
-                                File(imageFullPath(_steps[i].imagePath!)),
-                                width: double.infinity,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                            child: GestureDetector(
+                              onTap: () => showPhotoViewer(
+                                context,
+                                imageFullPath(_steps[i].imagePath!),
+                                caption: '第 ' + (i + 1).toString() + ' 步',
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(14),
+                                child: Image.file(
+                                  File(imageFullPath(_steps[i].imagePath!)),
+                                  width: double.infinity,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) =>
+                                      const SizedBox.shrink(),
+                                ),
                               ),
                             ),
                           ),
-                        Text(
+                        IndentedText(
                           _steps[i].text,
                           style: const TextStyle(fontSize: 26, height: 1.55),
+                          indent: 28,
                         ),
                       ],
                     ),

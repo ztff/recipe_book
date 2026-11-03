@@ -214,6 +214,24 @@ class RecipeDraft {
   final List<DraftStep> steps;
 }
 
+class StatsSummary {
+  StatsSummary({
+    required this.totalRecipes,
+    required this.totalCooks,
+    required this.averageRating,
+    required this.cookedLast30Days,
+    required this.topRecipes,
+    required this.recentCooks,
+  });
+
+  final int totalRecipes;
+  final int totalCooks;
+  final double? averageRating;
+  final int cookedLast30Days;
+  final List<({int id, String name, int count})> topRecipes;
+  final List<({int at, int? rating, String name})> recentCooks;
+}
+
 class AppDb {
   AppDb._(this._db) {
     _db.execute('PRAGMA foreign_keys = ON');
@@ -347,8 +365,10 @@ class AppDb {
     final args = <Object?>[];
     if (search.trim().isNotEmpty) {
       final q = '%' + search.trim().toLowerCase() + '%';
-      where.add('(search_key LIKE ? OR lower(name) LIKE ? OR tags_text LIKE ?)');
-      args.addAll([q, q, q]);
+      // 除了菜名、拼音、标签，也匹配用料：搜「排骨」能找出用到排骨的菜。
+      where.add('(search_key LIKE ? OR lower(name) LIKE ? OR tags_text LIKE ? OR '
+          'id IN (SELECT recipe_id FROM ingredients WHERE lower(name) LIKE ?))');
+      args.addAll([q, q, q, q]);
     }
     if (cuisine != null && cuisine.isNotEmpty) {
       where.add('cuisine = ?');
@@ -372,6 +392,51 @@ class AppDb {
     if (where.isNotEmpty) sql.write(' WHERE ' + where.join(' AND '));
     sql.write(' ORDER BY ' + orderBy);
     return _db.select(sql.toString(), args).map(RecipeRow.fromRow).toList();
+  }
+
+  /// 统计页用的汇总数据。
+  StatsSummary queryStats() {
+    final total = _db.select('SELECT COUNT(*) AS c FROM recipes').first['c'] as int;
+    final cooked = _db
+        .select('SELECT COALESCE(SUM(cook_count), 0) AS c FROM recipes')
+        .first['c'] as int;
+    final avg = _db
+        .select('SELECT AVG(last_rating) AS r FROM recipes WHERE last_rating IS NOT NULL')
+        .first['r'];
+    final doneLast30 = _db.select(
+      'SELECT COUNT(*) AS c FROM cook_logs WHERE cooked_at >= ?',
+      [DateTime.now().subtract(const Duration(days: 30)).millisecondsSinceEpoch],
+    ).first['c'] as int;
+    final top = _db
+        .select(
+          'SELECT id, name, cook_count FROM recipes WHERE cook_count > 0 '
+          'ORDER BY cook_count DESC, name ASC LIMIT 5',
+        )
+        .map((r) => (
+              id: r['id'] as int,
+              name: r['name'] as String,
+              count: r['cook_count'] as int,
+            ))
+        .toList();
+    final recent = _db
+        .select(
+          'SELECT l.cooked_at, l.rating, r.name FROM cook_logs l '
+          'JOIN recipes r ON r.id = l.recipe_id ORDER BY l.cooked_at DESC LIMIT 10',
+        )
+        .map((r) => (
+              at: r['cooked_at'] as int,
+              rating: (r['rating'] as num?)?.toInt(),
+              name: r['name'] as String,
+            ))
+        .toList();
+    return StatsSummary(
+      totalRecipes: total,
+      totalCooks: cooked,
+      averageRating: (avg as num?)?.toDouble(),
+      cookedLast30Days: doneLast30,
+      topRecipes: top,
+      recentCooks: recent,
+    );
   }
 
   RecipeRow? recipeById(int id) {

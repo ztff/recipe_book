@@ -5,6 +5,7 @@ import 'core/theme.dart';
 import 'features/recipes/recipe_list_page.dart';
 import 'features/settings/settings_page.dart';
 import 'features/shopping/shopping_page.dart';
+import 'features/stats/stats_page.dart';
 
 class RecipeApp extends StatelessWidget {
   const RecipeApp({super.key});
@@ -45,6 +46,7 @@ class _HomeShellState extends State<HomeShell> {
   static const _pages = [
     RecipeListPage(),
     ShoppingPage(),
+    StatsPage(),
     SettingsPage(),
   ];
 
@@ -70,6 +72,8 @@ class _HomeShellState extends State<HomeShell> {
                   NavigationRailDestination(
                       icon: Icon(Icons.shopping_basket_outlined), label: Text('采购')),
                   NavigationRailDestination(
+                      icon: Icon(Icons.insights_outlined), label: Text('统计')),
+                  NavigationRailDestination(
                       icon: Icon(Icons.settings_outlined), label: Text('设置')),
                 ],
               ),
@@ -89,6 +93,7 @@ class _HomeShellState extends State<HomeShell> {
           destinations: const [
             NavigationDestination(icon: Icon(Icons.restaurant_menu), label: '菜谱'),
             NavigationDestination(icon: Icon(Icons.shopping_basket_outlined), label: '采购'),
+            NavigationDestination(icon: Icon(Icons.insights_outlined), label: '统计'),
             NavigationDestination(icon: Icon(Icons.settings_outlined), label: '设置'),
           ],
         ),

@@ -6,6 +6,30 @@ OcrLine line(String text, double top, {double left = 40, double right = 700}) =>
     OcrLine(text: text, top: top, bottom: top + 34, left: left, right: right);
 
 void main() {
+
+  test('状态栏时钟和电量不会被当成菜名', () {
+    final layout = OcrLayout(
+      width: 540,
+      height: 2600,
+      lines: [
+        line('5:07', 20),
+        line('87%', 20, left: 470),
+        line('酸菜炖大骨头', 180),
+        line('冬天不吃炖酸菜，那谁能扛了想念啊', 260),
+        line('用料', 420),
+        line('酸菜 500克', 500),
+        line('肘子骨头 2斤', 580),
+        line('步骤 1', 760),
+        line('骨头冷水下锅焯水，捞出洗净。', 900),
+      ],
+    );
+    final r = parseScreenRecipe(layout);
+
+    expect(r.name, '酸菜炖大骨头');
+    expect(r.name, isNot(contains(':')));
+    expect(r.description ?? '', isNot(contains('5:07')));
+    expect(r.ingredients.length, greaterThanOrEqualTo(2));
+  });
   test('小红书式截图：菜名、用料、步骤、小贴士', () {
     final layout = OcrLayout(
       width: 848,

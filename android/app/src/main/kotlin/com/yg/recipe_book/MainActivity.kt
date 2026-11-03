@@ -16,8 +16,8 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
-            .setMethodCallHandler { call, result ->
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "recognize" -> {
                         val path = call.argument<String>("path")
@@ -27,7 +27,17 @@ class MainActivity : FlutterActivity() {
                         }
                         worker.execute {
                             try {
-                                val ocr = engine ?: OcrEngine(applicationContext).also { engine = it }
+                                val ocr = engine ?: OcrEngine(applicationContext) { done, total ->
+                                    main.post {
+                                        try {
+                                            channel.invokeMethod(
+                                                "progress",
+                                                mapOf("done" to done, "total" to total),
+                                            )
+                                        } catch (_: Throwable) {
+                                        }
+                                    }
+                                }.also { engine = it }
                                 val res = ocr.recognize(path)
                                 val payload = mapOf(
                                     "width" to res.width,

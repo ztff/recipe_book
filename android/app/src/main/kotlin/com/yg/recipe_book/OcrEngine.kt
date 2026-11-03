@@ -37,7 +37,11 @@ class OcrLine(
  * 整图由本类自己分片（1400px 高、80px 重叠），不经过 Flutter 解码，
  * 所以没有 8192px 的降采样限制。
  */
-class OcrEngine(private val context: Context) {
+class OcrEngine(
+    private val context: Context,
+    /** 分片识别进度回调：(已完成片数, 总片数)。 */
+    private val onProgress: ((Int, Int) -> Unit)? = null,
+) {
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private var det: OrtSession? = null
@@ -114,6 +118,15 @@ class OcrEngine(private val context: Context) {
             ?: return OcrResult(emptyList(), bounds.outWidth, bounds.outHeight)
         val scaleBack = sample.toFloat()
 
+        // 先按高度算出总片数，识别过程中报百分比。
+        val totalTiles = if (full.height <= tileHeight) {
+          1
+        } else {
+          ((full.height - tileOverlap) / (tileHeight - tileOverlap)) + 1
+        }
+        var tileDone = 0
+        onProgress?.invoke(0, totalTiles)
+
         val all = ArrayList<OcrLine>()
         var top = 0
         while (top < full.height) {
@@ -142,6 +155,8 @@ class OcrEngine(private val context: Context) {
             }
             tile.recycle()
             detBitmap.recycle()
+            tileDone++
+            onProgress?.invoke(min(tileDone, totalTiles), totalTiles)
             if (top + h >= full.height) break
             top += tileHeight - tileOverlap
         }

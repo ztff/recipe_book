@@ -9,6 +9,29 @@ import 'vocab.dart';
 /// 原生 PaddleOCR 通道（PP-OCRv4 det + rec 跑在 ONNX Runtime 上）。
 const MethodChannel _ocrChannel = MethodChannel('yg/ocr');
 
+/// 当前正在跑的任务的进度回调；原生侧分片完成一片就回报一次。
+OcrProgress? _activeProgress;
+int _lastTotal = 0;
+
+void _ensureProgressBridge() {
+  if (_bridgeReady) return;
+  _bridgeReady = true;
+  _ocrChannel.setMethodCallHandler((call) async {
+    if (call.method == 'progress') {
+      final args = call.arguments;
+      if (args is Map) {
+        final done = (args['done'] as num?)?.toInt() ?? 0;
+        final total = (args['total'] as num?)?.toInt() ?? 1;
+        _lastTotal = total;
+        _activeProgress?.call(done, total);
+      }
+    }
+    return null;
+  });
+}
+
+bool _bridgeReady = false;
+
 /// 当前只有 Android 侧接了本地 OCR 模型；桌面端入口会被隐藏。
 bool get ocrAvailable {
   if (kIsWeb) return false;
@@ -87,12 +110,19 @@ Future<OcrLayout?> recognizeLayoutNative(
   OcrProgress? onProgress,
 }) async {
   try {
+    _ensureProgressBridge();
+    _activeProgress = onProgress;
+    _lastTotal = 1;
     onProgress?.call(0, 1);
     final raw = await _ocrChannel.invokeMapMethod<String, dynamic>(
       'recognize',
       {'path': image.path},
     );
-    onProgress?.call(1, 1);
+    onProgress?.call(
+      _lastTotal > 0 ? _lastTotal : 1,
+      _lastTotal > 0 ? _lastTotal : 1,
+    );
+    _activeProgress = null;
     if (raw == null) return null;
     final width = (raw['width'] as num?)?.toInt() ?? 0;
     final height = (raw['height'] as num?)?.toInt() ?? 0;

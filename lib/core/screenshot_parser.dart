@@ -201,6 +201,11 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
       dropped++;
       continue;
     }
+    // 状态栏：时钟、电量、信号格之类，不能当成菜名。
+    if (_isStatusChrome(t)) {
+      dropped++;
+      continue;
+    }
     usable.add(line);
   }
   if (usable.isEmpty) return ScreenRecipe(droppedLines: dropped);
@@ -371,6 +376,16 @@ bool _isJunkName(String text) {
 }
 
 /// 明显的识别噪声：太短、或中文占比过低（广告卡上的乱码）。
+/// 状态栏/系统界面残留：时钟、电量、信号格、纯编号行。
+///
+/// 判据是「把数字和标点全去掉以后什么都不剩」，这样
+/// 5:07、87%、5:07 87%、12、3. 都会被丢掉，而 500克、20分钟 会留下。
+bool _isStatusChrome(String text) {
+  if (text.isEmpty) return false;
+  final stripped = text.replaceAll(RegExp(r'[0-9:：%．.\-\s+/、]'), '');
+  return stripped.isEmpty;
+}
+
 bool _isNoise(String text) {
   final t = text.trim();
   if (t.length < 8) return true;
