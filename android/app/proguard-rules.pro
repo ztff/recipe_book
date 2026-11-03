@@ -10,3 +10,8 @@
 # 保留 ML Kit 与插件的实现类，避免被裁剪后运行时报 ClassNotFound
 -keep class com.google.mlkit.** { *; }
 -keep class com.google_mlkit_text_recognition.** { *; }
+
+# ONNX Runtime 的 Java 绑定在 JNI 里按类名反射找 ai.onnxruntime.* 的类，
+# 被 R8 改名后会报 "JNI DETECTED ERROR: java_class == null"，直接 SIGABRT。
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**

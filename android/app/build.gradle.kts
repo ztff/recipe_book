@@ -30,6 +30,24 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.yg.recipe_book"
+        // ONNX Runtime 的 AAR 自带四个架构的 .so（约 98MB），
+        // 不按构建目标裁掉会让每个 APK 都背上全部架构。
+        // Flutter 构建时会传 -Ptarget-platform=android-arm64 之类的值。
+        ndk {
+            abiFilters.clear()
+            val targets = (project.findProperty("target-platform") as String?)
+                ?.split(",")
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
+            for (t in targets) {
+                when (t) {
+                    "android-arm64" -> abiFilters.add("arm64-v8a")
+                    "android-arm" -> abiFilters.add("armeabi-v7a")
+                    "android-x64" -> abiFilters.add("x86_64")
+                }
+            }
+        }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -51,6 +69,12 @@ android {
                 storePassword = keystoreProperties["storePassword"] as String
             }
         }
+    }
+
+    // .onnx 模型不需要二次压缩：压缩后 R8 打包会被解压到临时目录，
+    // 首次加载会多花时间，且体积几乎压不动。
+    androidResources {
+        noCompress += listOf("onnx")
     }
 
     buildTypes {
@@ -79,8 +103,7 @@ flutter {
 }
 
 dependencies {
-    // ML Kit 的文字识别模型是按语言拆分的可选依赖：
-    // 插件默认只带拉丁语系，中文/日文等需要显式引入，否则 R8 会报 Missing class。
-    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    // PaddleOCR（PP-OCRv4）走 ONNX Runtime 本地推理，模型放在 assets/ocr 里。
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 }
 

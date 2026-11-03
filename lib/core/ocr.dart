@@ -1,34 +1,27 @@
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:flutter/services.dart';
 
 import 'vocab.dart';
 
-/// ML Kit 只在 Android / iOS 提供离线模型；桌面端返回 false，入口会被隐藏。
+/// 原生 PaddleOCR 通道（PP-OCRv4 det + rec 跑在 ONNX Runtime 上）。
+const MethodChannel _ocrChannel = MethodChannel('yg/ocr');
+
+/// 当前只有 Android 侧接了本地 OCR 模型；桌面端入口会被隐藏。
 bool get ocrAvailable {
   if (kIsWeb) return false;
-  return Platform.isAndroid || Platform.isIOS;
+  return Platform.isAndroid;
 }
 
-/// 单张切片的高度：太大时 ML Kit 会把整图缩小到模型输入尺寸，
-/// 文字被压到几个像素就认不出来了，所以必须自己切。
-const int _tileHeight = 1400;
-
-/// 相邻切片的重叠高度，避免一行正好被切成两半。
-const int _overlap = 80;
-
-/// 高度小于这个值就不切，一次识别完。
-const int _singleShotLimit = 2000;
-
 /// Flutter 解码图片时最长边封顶 8192，超过会被等比缩小。
+/// 裁剪配图时要按这个比例把原图坐标换算回去。
 const int kMaxDecodeSide = 8192;
 
 typedef OcrProgress = void Function(int done, int total);
 
-/// 一行识别结果，带它在整张图里的纵向位置。
+/// 一行识别结果，带它在整张图里的位置。
 ///
 /// 图文混排的截图（小红书那种）只按返回顺序拼会乱序，
 /// 必须靠 top 自己按从上到下重排。
@@ -77,83 +70,61 @@ class OcrText {
 
 /// 识别整张图，保留每一行的坐标。
 ///
-/// 长截图会按高度切片分别识别，再把各片坐标换算回整图坐标后统一排序。
+/// 分片、检测、识别都在原生侧完成，不经过 Flutter 解码，
+/// 所以不受 8192px 降采样的限制。
 Future<OcrLayout?> recognizeLayout(
   File image, {
   OcrProgress? onProgress,
   bool highAccuracy = true,
 }) async {
   if (!ocrAvailable) return null;
-  ui.Codec? codec;
-  ui.Image? source;
-  TextRecognizer? recognizer;
+  return recognizeLayoutNative(image, onProgress: onProgress);
+}
+
+/// 走原生 PP-OCRv4。
+Future<OcrLayout?> recognizeLayoutNative(
+  File image, {
+  OcrProgress? onProgress,
+}) async {
   try {
-    final bytes = await image.readAsBytes();
-    codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    source = frame.image;
-    recognizer = TextRecognizer(script: TextRecognitionScript.chinese);
-
-    if (source.height <= _singleShotLimit) {
-      onProgress?.call(1, 1);
-      final lines = await _recognizeImage(recognizer, source, 0);
-      if (lines.isEmpty) return null;
-      return OcrLayout(
-        lines: _tidy(lines),
-        width: source.width,
-        height: source.height,
-      );
+    onProgress?.call(0, 1);
+    final raw = await _ocrChannel.invokeMapMethod<String, dynamic>(
+      'recognize',
+      {'path': image.path},
+    );
+    onProgress?.call(1, 1);
+    if (raw == null) return null;
+    final width = (raw['width'] as num?)?.toInt() ?? 0;
+    final height = (raw['height'] as num?)?.toInt() ?? 0;
+    final list = (raw['lines'] as List?) ?? const [];
+    final lines = <OcrLine>[];
+    for (final item in list) {
+      if (item is! Map) continue;
+      final text = (item['text'] as String?)?.trim() ?? '';
+      if (text.isEmpty) continue;
+      lines.add(OcrLine(
+        text: fixTypos(text),
+        left: (item['left'] as num).toDouble(),
+        top: (item['top'] as num).toDouble(),
+        right: (item['right'] as num).toDouble(),
+        bottom: (item['bottom'] as num).toDouble(),
+      ));
     }
-
-    final downscaled = source.height >= kMaxDecodeSide;
-    final step = _tileHeight - _overlap;
-    final total = math
-        .max(1, ((source.height - _overlap) / step).ceil())
-        .clamp(1, 120);
-    debugPrint('ocr source: ' +
-        source.width.toString() +
+    if (lines.isEmpty) return null;
+    debugPrint('ocr native: ' +
+        width.toString() +
         'x' +
-        source.height.toString() +
-        ' tiles: ' +
-        total.toString());
-    onProgress?.call(0, total);
-
-    final all = <OcrLine>[];
-    var done = 0;
-    var top = 0;
-    while (top < source.height) {
-      final h = math.min(_tileHeight, source.height - top);
-      final lines = highAccuracy
-          ? await _recognizeTileVoted(recognizer, source, top, h)
-          : await _recognizePng(
-              recognizer,
-              await _cropToPng(source, top, h),
-              top.toDouble(),
-            );
-      all.addAll(lines);
-      done++;
-      onProgress?.call(math.min(done, total), total);
-      if (top + h >= source.height) break;
-      top += step;
-    }
-    if (all.isEmpty) return null;
+        height.toString() +
+        ' lines: ' +
+        lines.length.toString());
     return OcrLayout(
-      lines: _tidy(all),
-      width: source.width,
-      height: source.height,
-      downscaled: downscaled,
+      lines: _tidy(lines),
+      width: width > 0 ? width : 1,
+      height: height > 0 ? height : 1,
     );
   } catch (e) {
-    debugPrint('ocr failed: ' + e.toString());
+    debugPrint('ocr native failed: ' + e.toString());
     return null;
-  } finally {
-    try {
-      await recognizer?.close();
-    } catch (_) {}
-    source?.dispose();
-    try {
-      codec?.dispose();
-    } catch (_) {}
   }
 }
 
@@ -164,7 +135,7 @@ Future<OcrText?> recognizeText(File image, {OcrProgress? onProgress}) async {
   return OcrText(layout.plainText, downscaled: layout.downscaled);
 }
 
-/// 按 y 排序 + 去掉切片重叠造成的重复行。
+/// 按 y 排序 + 去掉相邻重复行。
 List<OcrLine> _tidy(List<OcrLine> lines) {
   final sorted = [...lines]..sort((a, b) {
       final d = a.top.compareTo(b.top);
@@ -173,140 +144,36 @@ List<OcrLine> _tidy(List<OcrLine> lines) {
     });
   final out = <OcrLine>[];
   for (final line in sorted) {
-    if (line.text.trim().isEmpty) continue;
-    var duplicate = false;
-    for (final kept in out) {
-      if ((kept.top - line.top).abs() > 36) continue;
-      final a = kept.text.replaceAll(RegExp(r'\s'), '');
-      final b = line.text.replaceAll(RegExp(r'\s'), '');
-      if (a == b || (a.length > 3 && (a.contains(b) || b.contains(a)))) {
-        duplicate = true;
-        break;
-      }
-    }
-    if (!duplicate) out.add(line);
+    final dup = out.any((e) =>
+        (e.top - line.top).abs() < 20 &&
+        (e.left - line.left).abs() < 20 &&
+        e.text == line.text);
+    if (!dup) out.add(line);
   }
   return out;
 }
 
-Future<List<OcrLine>> _recognizeImage(
-  TextRecognizer rec,
-  ui.Image img,
-  double yOffset,
-) async {
-  final png = await _encodePng(img);
-  return _recognizePng(rec, png, yOffset);
-}
-
-/// 同一片用原始尺寸和放大 1.6 倍各认一次，再按「像不像菜谱用词」投票。
-Future<List<OcrLine>> _recognizeTileVoted(
-  TextRecognizer rec,
-  ui.Image src,
-  int top,
-  int height,
-) async {
-  final normal = await _recognizePng(rec, await _cropToPng(src, top, height), top.toDouble());
-  if (normal.isEmpty) return normal;
-  try {
-    const scale = 1.6;
-    final scaled = await _cropToPngScaled(src, top, height, scale);
-    final bigger = await _recognizePng(
-      rec,
-      scaled,
-      top.toDouble(),
-      scale: scale,
-    );
-    return _vote(normal, bigger);
-  } catch (e) {
-    debugPrint('ocr vote skipped: ' + e.toString());
-    return normal;
-  }
-}
-
-List<OcrLine> _vote(List<OcrLine> a, List<OcrLine> b) {
-  if (b.isEmpty) return a;
-  if (a.isEmpty) return b;
-  final out = <OcrLine>[];
-  final used = <int>{};
-  for (final la in a) {
-    var bestIndex = -1;
-    var bestDelta = 46.0;
-    for (var i = 0; i < b.length; i++) {
-      if (used.contains(i)) continue;
-      final d = (b[i].top - la.top).abs();
-      if (d < bestDelta) {
-        bestDelta = d;
-        bestIndex = i;
-      }
-    }
-    if (bestIndex < 0) {
-      out.add(la);
-      continue;
-    }
-    used.add(bestIndex);
-    final lb = b[bestIndex];
-    // 只有明显更像中文才换，避免投票反而改坏
-    final pick = vocabScore(lb.text) - vocabScore(la.text) >= 4 ? lb : la;
-    out.add(OcrLine(
-      text: pick.text,
-      top: la.top,
-      bottom: la.bottom,
-      left: la.left,
-      right: la.right,
-    ));
-  }
-  for (var i = 0; i < b.length; i++) {
-    if (!used.contains(i)) out.add(b[i]);
-  }
-  return out;
-}
-
-Future<List<OcrLine>> _recognizePng(
-  TextRecognizer rec,
-  Uint8List png,
-  double yOffset, {
-  double scale = 1.0,
-}) async {
-  final path = Directory.systemTemp.path +
-      '/ocr_' +
-      DateTime.now().microsecondsSinceEpoch.toString() +
-      '.png';
-  final tmp = File(path);
-  try {
-    await tmp.writeAsBytes(png, flush: true);
-    final result = await rec.processImage(InputImage.fromFilePath(tmp.path));
-    final lines = <OcrLine>[];
-    for (final block in result.blocks) {
-      for (final line in block.lines) {
-        final box = line.boundingBox;
-        final text = line.text.trim();
-        if (text.isEmpty) continue;
-        lines.add(OcrLine(
-          text: text,
-          top: box.top / scale + yOffset,
-          bottom: box.bottom / scale + yOffset,
-          left: box.left / scale,
-          right: box.right / scale,
-        ));
-      }
-    }
-    return lines;
-  } finally {
-    try {
-      if (await tmp.exists()) await tmp.delete();
-    } catch (_) {}
-  }
+Future<Uint8List> _encodePng(ui.Image img) async {
+  final data = await img.toByteData(format: ui.ImageByteFormat.png);
+  return data!.buffer.asUint8List();
 }
 
 Future<Uint8List> _cropToPng(ui.Image src, int top, int height) async {
   final recorder = ui.PictureRecorder();
   final canvas = ui.Canvas(recorder);
-  canvas.drawImageRect(
-    src,
-    ui.Rect.fromLTWH(0, top.toDouble(), src.width.toDouble(), height.toDouble()),
-    ui.Rect.fromLTWH(0, 0, src.width.toDouble(), height.toDouble()),
-    ui.Paint(),
+  final srcRect = ui.Rect.fromLTWH(
+    0,
+    top.toDouble(),
+    src.width.toDouble(),
+    height.toDouble(),
   );
+  final dstRect = ui.Rect.fromLTWH(
+    0,
+    0,
+    src.width.toDouble(),
+    height.toDouble(),
+  );
+  canvas.drawImageRect(src, srcRect, dstRect, ui.Paint());
   final picture = recorder.endRecording();
   final cropped = await picture.toImage(src.width, height);
   try {
@@ -317,53 +184,27 @@ Future<Uint8List> _cropToPng(ui.Image src, int top, int height) async {
   }
 }
 
-Future<Uint8List> _cropToPngScaled(
-  ui.Image src,
-  int top,
-  int height,
-  double scale,
-) async {
-  final outW = (src.width * scale).round();
-  final outH = (height * scale).round();
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder);
-  canvas.drawImageRect(
-    src,
-    ui.Rect.fromLTWH(0, top.toDouble(), src.width.toDouble(), height.toDouble()),
-    ui.Rect.fromLTWH(0, 0, outW.toDouble(), outH.toDouble()),
-    ui.Paint()..filterQuality = ui.FilterQuality.high,
-  );
-  final picture = recorder.endRecording();
-  final cropped = await picture.toImage(outW, outH);
-  try {
-    return await _encodePng(cropped);
-  } finally {
-    cropped.dispose();
-    picture.dispose();
-  }
-}
-
-Future<Uint8List> _encodePng(ui.Image img) async {
-  final data = await img.toByteData(format: ui.ImageByteFormat.png);
-  return data!.buffer.asUint8List();
-}
-
 /// 把原图上的一段纵向区域裁出来存成图片文件。
 ///
-/// 坐标系与 [recognizeLayout] 返回的坐标一致（即解码后的像素坐标）。
+/// [top] / [bottom] 用的是原图像素坐标（和 [recognizeLayout] 返回的坐标一致）。
+/// 原图高度超过 8192 时 Flutter 解码会等比缩小，这里按 [sourceHeight] 换算回去。
 Future<bool> cropRegionToFile(
   File source,
   double top,
   double bottom,
-  String destPath,
-) async {
+  String destPath, {
+  int? sourceHeight,
+}) async {
   ui.Codec? codec;
   ui.Image? img;
   try {
     codec = await ui.instantiateImageCodec(await source.readAsBytes());
     img = (await codec.getNextFrame()).image;
-    final t = top.round().clamp(0, img.height - 1);
-    final b = bottom.round().clamp(t + 1, img.height);
+    final scale = (sourceHeight != null && sourceHeight > 0)
+        ? img.height / sourceHeight
+        : 1.0;
+    final t = (top * scale).round().clamp(0, img.height - 1);
+    final b = (bottom * scale).round().clamp(t + 1, img.height);
     if (b - t < 40) return false;
     final png = await _cropToPng(img, t, b - t);
     await File(destPath).writeAsBytes(png, flush: true);

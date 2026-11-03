@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../../core/app_settings.dart';
 import '../../core/constants.dart';
 import '../../core/ocr.dart';
 import '../../core/paths.dart';
@@ -229,7 +228,6 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
 
       final layout = await recognizeLayout(
         file,
-        highAccuracy: appSettings.value.ocrHighAccuracy,
         onProgress: (done, total) {
           if (mounted) {
             setState(() => _ocrStatus =
@@ -267,7 +265,9 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       final crops = <String?>[];
       for (var i = 0; i < parsed.steps.length; i++) {
         final rect = parsed.steps[i].imageRect;
-        crops.add(rect == null ? null : await _saveStepCrop(src, rect, i));
+        crops.add(rect == null
+            ? null
+            : await _saveStepCrop(src, rect, i, layout.height));
       }
 
       if (!mounted) return;
@@ -339,14 +339,24 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     }
   }
 
-  Future<String?> _saveStepCrop(File source, Rect rect, int index) async {
+  Future<String?> _saveStepCrop(
+    File source,
+    Rect rect,
+    int index,
+    int sourceHeight,
+  ) async {
     final name = 'step_' +
         DateTime.now().millisecondsSinceEpoch.toString() +
         '_' +
         index.toString() +
         '.jpg';
-    final ok =
-        await cropRegionToFile(source, rect.top, rect.bottom, imageFullPath(name));
+    final ok = await cropRegionToFile(
+      source,
+      rect.top,
+      rect.bottom,
+      imageFullPath(name),
+      sourceHeight: sourceHeight,
+    );
     return ok ? name : null;
   }
 

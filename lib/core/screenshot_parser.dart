@@ -47,7 +47,11 @@ class ScreenIngredient {
 
   String get display {
     final q = qty == null ? '' : (qty! % 1 == 0 ? qty!.toInt().toString() : qty!.toString());
-    return name + (q.isEmpty ? '' : ' ' + q + (unit ?? ''));
+    if (q.isEmpty) {
+      // 没有数字时 unit 里存的是「一段」「适量」这种整串数量
+      return unit == null ? name : name + ' ' + unit!;
+    }
+    return name + ' ' + q + (unit ?? '');
   }
 }
 
@@ -69,7 +73,7 @@ const List<String> _adKeywords = [
 /// 明显是界面元素、不该进菜谱的行。
 const List<String> _uiKeywords = [
   '关注', '已关注', '点赞', '收藏', '评论', '综合评分',
-  '丢进菜篮子', '菜篮子', '加入清单', '去购买',
+  '丢进菜篮子', '菜篮子', '篮子', '加入清单', '去购买',
 ];
 
 const List<String> _ingredientHeaders = ['用料', '食材', '配料', '原料', '材料', '主料', '调料'];
@@ -83,7 +87,106 @@ final RegExp _amountOnly = RegExp(
   r'^(\d+([~\-—]\d+)?)\s*(克|g|G|千克|kg|斤|两|毫升|ml|mL|升|个|只|片|根|棵|把|勺|汤匙|茶匙|碗|杯|块|条|瓣|颗|粒|包|袋|瓶|盒|张|朵|撮|小把|大勺|小勺|适量|少许)$',
 );
 
+/// 「一段」「半勺」「两大勺」这类中文数量词。
+final RegExp _cnAmount = RegExp(
+  r'^(.+?)s*((?:半|一|二|两|三|四|五|六|七|八|九|十|几)?[大中小]?(?:勺|汤匙|茶匙|碗|杯|个|只|片|根|棵|把|块|条|瓣|颗|粒|包|袋|瓶|盒|张|朵|撮|段))$',
+);
+
+/// 「任意多少」「按口味调料」这类没法量化的写法。
+final RegExp _vagueAmount = RegExp(r'^(.+?)s*(适量|少许|若干|任意多少|随意|按口味.*|依口味.*)$');
+
 bool _hasAny(String text, List<String> keys) => keys.any((k) => text.contains(k));
+
+/// 括号没闭合的续行（「1个（孩子吃我没」+「放)」）合回上一行。
+List<OcrLine> _joinContinuation(List<OcrLine> lines) {
+  final out = <OcrLine>[];
+  final open = RegExp(r'[（(]');
+  final close = RegExp(r'[）)]');
+  for (final line in lines) {
+    final t = line.text.trim();
+    final prev = out.isEmpty ? null : out.last;
+    final tailLike = t.length <= 4 && close.hasMatch(t);
+    if (tailLike && prev != null) {
+      final opens = open.allMatches(prev.text).length;
+      final closes = close.allMatches(prev.text).length;
+      if (opens > closes) {
+        out.removeLast();
+        out.add(OcrLine(
+          text: prev.text + t,
+          top: prev.top,
+          bottom: line.bottom,
+          left: prev.left,
+          right: line.right,
+        ));
+        continue;
+      }
+    }
+    out.add(line);
+  }
+  return out;
+}
+
+/// PaddleOCR 会把同一行的「名称」和「数量」拆成两个框分别返回，
+/// ML Kit 则合成一行。这里按纵向重叠把碎片合回去，解析逻辑才不用改两套。
+List<OcrLine> _mergeRowFragments(List<OcrLine> lines) {
+  if (lines.isEmpty) return lines;
+  final sorted = [...lines]..sort((a, b) => a.top.compareTo(b.top));
+  final rows = <List<OcrLine>>[];
+  for (final line in sorted) {
+    final h = (line.bottom - line.top).clamp(1.0, 1e6);
+    var placed = false;
+    for (final row in rows) {
+      final ref = row.first;
+      final refH = (ref.bottom - ref.top).clamp(1.0, 1e6);
+      final overlap =
+          math.min(line.bottom, ref.bottom) - math.max(line.top, ref.top);
+      if (overlap > math.min(h, refH) * 0.6) {
+        row.add(line);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) rows.add([line]);
+  }
+
+  const numberish = r'^[\d半一二两三四五六七八九十]+';
+  final out = <OcrLine>[];
+  for (final row in rows) {
+    if (row.length == 1) {
+      out.add(row.first);
+      continue;
+    }
+    row.sort((a, b) => a.left.compareTo(b.left));
+    final buf = StringBuffer();
+    for (final piece in row) {
+      final t = piece.text.trim();
+      if (t.isEmpty) continue;
+      if (buf.isEmpty) {
+        buf.write(t);
+      } else if (RegExp(numberish).hasMatch(t) ||
+          _amountOnly.hasMatch(t) ||
+          _cnAmount.hasMatch(t) ||
+          _vagueAmount.hasMatch(t)) {
+        buf.write(' ');
+        buf.write(t);
+      } else {
+        buf.write(t);
+      }
+    }
+    out.add(OcrLine(
+      text: buf.toString(),
+      top: row.map((e) => e.top).reduce(math.min),
+      bottom: row.map((e) => e.bottom).reduce(math.max),
+      left: row.map((e) => e.left).reduce(math.min),
+      right: row.map((e) => e.right).reduce(math.max),
+    ));
+  }
+  out.sort((a, b) {
+    final d = a.top.compareTo(b.top);
+    return d != 0 ? d : a.left.compareTo(b.left);
+  });
+  return out;
+}
 
 /// 把整张截图的识别结果解析成一道菜。
 ScreenRecipe parseScreenRecipe(OcrLayout layout) {
@@ -91,7 +194,7 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
 
   final usable = <OcrLine>[];
   var dropped = 0;
-  for (final line in layout.lines) {
+  for (final line in _joinContinuation(_mergeRowFragments(layout.lines))) {
     final t = line.text.trim();
     if (t.isEmpty) continue;
     if (_hasAny(t, _adKeywords) || _hasAny(t, _uiKeywords)) {
@@ -129,13 +232,21 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
   var nameConfident = false;
   String? description;
 
+  // 说明一定紧贴「用料」标题上方，广告和账号名都在更上面。
+  // 所以从最靠近用料的一行往前收，遇到断行就停。
   if (headLines.length > 1) {
-    final rest = headLines
-        .skip(1)
-        .map((e) => e.text.trim())
-        .where((e) => !_isNoise(e))
-        .toList();
-    if (rest.isNotEmpty) description = rest.join('\n');
+    final tail = <String>[];
+    double? prevTop;
+    for (var i = headLines.length - 1; i >= 1; i--) {
+      final line = headLines[i];
+      final t = line.text.trim();
+      if (_isNoise(t)) break;
+      final h = (line.bottom - line.top).clamp(1.0, 400.0);
+      if (prevTop != null && (prevTop - line.top) > h * 2.4) break;
+      tail.insert(0, t);
+      prevTop = line.top;
+    }
+    if (tail.isNotEmpty) description = tail.join('\n');
   }
   final cleaned = cleanDishName(name);
   if (cleaned != null && cleaned != name) {
@@ -168,6 +279,23 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
       final parsed = _parseAmount(t);
       if (parsed != null) {
         ingredients.add(parsed);
+        continue;
+      }
+      // 「葱 一段」「五花肉 任意多少」「盐 按口味调料」：数量是文字不是数字
+      final cn = _cnAmount.firstMatch(t);
+      if (cn != null && (cn.group(1) ?? '').trim().isNotEmpty) {
+        ingredients.add(ScreenIngredient(
+          name: (cn.group(1) ?? '').trim(),
+          unit: cn.group(2),
+        ));
+        continue;
+      }
+      final vague = _vagueAmount.firstMatch(t);
+      if (vague != null && (vague.group(1) ?? '').trim().isNotEmpty) {
+        ingredients.add(ScreenIngredient(
+          name: (vague.group(1) ?? '').trim(),
+          unit: vague.group(2),
+        ));
         continue;
       }
       if (t.length <= 20 && !_isJunkName(t)) ingredients.add(ScreenIngredient(name: t));
@@ -253,7 +381,9 @@ bool _isNoise(String text) {
 ScreenIngredient? _parseAmount(String text) {
   final m = _ingredientAmount.firstMatch(text);
   if (m == null) return null;
-  final qty = double.tryParse(m.group(2) ?? '');
+  // 「2~3片」这种区间只取下限，和 _amountOnly 分支保持一致。
+  final raw = (m.group(2) ?? '').split(RegExp(r'[~\-—]')).first.trim();
+  final qty = double.tryParse(raw);
   if (qty == null) return null;
   final name = (m.group(1) ?? '').trim();
   if (name.isEmpty) return null;

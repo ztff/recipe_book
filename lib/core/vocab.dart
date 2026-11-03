@@ -79,9 +79,27 @@ int vocabScore(String text) {
 }
 
 /// 保守纠错：只改「换成形近正字后命中词表」的两字片段。
+/// 整词级别的纠错：OCR 把整个词认成另外几个字，靠单字替换救不回来。
+///
+/// 键是错误写法，值是正确写法。只在整段文字里出现时替换。
+const Map<String, String> kWordFix = {
+  '暴三十': '十三香',
+  '暴三香': '十三香',
+  '十三看': '十三香',
+  '丢进采蓝子': '丢进菜篮子',
+  '去进采蓝子': '丢进菜篮子',
+  '丢进菜蓝子': '丢进菜篮子',
+};
+
 String fixTypos(String text) {
   if (text.isEmpty) return text;
-  final chars = text.split('');
+  var work = text;
+  for (final entry in kWordFix.entries) {
+    if (work.contains(entry.key)) {
+      work = work.replaceAll(entry.key, entry.value);
+    }
+  }
+  final chars = work.split('');
   for (var i = 0; i + 1 < chars.length; i++) {
     final pair = chars[i] + chars[i + 1];
     if (!_isChinese(pair)) continue;

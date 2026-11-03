@@ -25,7 +25,6 @@ class AppSettings {
     this.timerSound = true,
     this.timerVibrate = true,
     this.defaultSort = 'recent',
-    this.ocrHighAccuracy = true,
   });
 
   final AppThemeMode themeMode;
@@ -35,9 +34,6 @@ class AppSettings {
   final bool timerSound;
   final bool timerVibrate;
   final String defaultSort;
-
-  /// 截屏识别是否用多尺度投票（更准，但耗时翻倍）。
-  final bool ocrHighAccuracy;
 
   Color get seedColor {
     final i = seedIndex.clamp(0, kSeedColors.length - 1);
@@ -58,7 +54,6 @@ class AppSettings {
     bool? timerSound,
     bool? timerVibrate,
     String? defaultSort,
-    bool? ocrHighAccuracy,
   }) {
     return AppSettings(
       themeMode: themeMode ?? this.themeMode,
@@ -68,7 +63,6 @@ class AppSettings {
       timerSound: timerSound ?? this.timerSound,
       timerVibrate: timerVibrate ?? this.timerVibrate,
       defaultSort: defaultSort ?? this.defaultSort,
-      ocrHighAccuracy: ocrHighAccuracy ?? this.ocrHighAccuracy,
     );
   }
 
@@ -92,7 +86,6 @@ class AppSettings {
       timerSound: (g('timer_sound') ?? '1') == '1',
       timerVibrate: (g('timer_vibrate') ?? '1') == '1',
       defaultSort: g('default_sort') ?? 'recent',
-      ocrHighAccuracy: (g('ocr_high_accuracy') ?? '1') == '1',
     );
   }
 
@@ -104,7 +97,6 @@ class AppSettings {
     db.setSetting('timer_sound', timerSound ? '1' : '0');
     db.setSetting('timer_vibrate', timerVibrate ? '1' : '0');
     db.setSetting('default_sort', defaultSort);
-    db.setSetting('ocr_high_accuracy', ocrHighAccuracy ? '1' : '0');
   }
 }
 

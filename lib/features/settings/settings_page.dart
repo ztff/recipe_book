@@ -375,12 +375,11 @@ class _SettingsPageState extends State<SettingsPage> {
           Text('截图识别', style: Theme.of(context).textTheme.titleMedium),
           Card(
             color: scheme.surfaceContainerLow,
-            child: SwitchListTile(
-              secondary: const Icon(Icons.auto_awesome_outlined),
-              title: const Text('高精度识别'),
-              subtitle: const Text('同一块区域用两种尺寸各认一次再挑更像菜谱的；更准，但长图要等两倍时间'),
-              value: s.ocrHighAccuracy,
-              onChanged: (v) => _apply(s.copyWith(ocrHighAccuracy: v)),
+            child: const ListTile(
+              leading: Icon(Icons.auto_awesome_outlined),
+              title: Text('本地 PaddleOCR'),
+              subtitle: Text('PP-OCRv4 模型随安装包一起放着，识别全在手机上完成，不联网。'
+                  '长图会先分片再逐片识别，约 10 秒。'),
             ),
           ),
           const SizedBox(height: 20),
