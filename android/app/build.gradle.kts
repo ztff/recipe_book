@@ -32,19 +32,25 @@ android {
         applicationId = "com.yg.recipe_book"
         // ONNX Runtime 的 AAR 自带四个架构的 .so（约 98MB），
         // 不按构建目标裁掉会让每个 APK 都背上全部架构。
-        // Flutter 构建时会传 -Ptarget-platform=android-arm64 之类的值。
-        ndk {
-            abiFilters.clear()
-            val targets = (project.findProperty("target-platform") as String?)
-                ?.split(",")
-                ?.map { it.trim() }
-                ?.filter { it.isNotEmpty() }
-                .orEmpty()
-            for (t in targets) {
-                when (t) {
-                    "android-arm64" -> abiFilters.add("arm64-v8a")
-                    "android-arm" -> abiFilters.add("armeabi-v7a")
-                    "android-x64" -> abiFilters.add("x86_64")
+        //
+        // 注意：--split-per-abi 构建时 Gradle 已经用 splits.abi.filters 指定了架构，
+        // 这时再设 ndk.abiFilters 会报 "Conflicting configuration" 直接失败，
+        // 所以只有在单架构构建（--target-platform）时才补这一刀。
+        val splitPerAbi = project.findProperty("split-per-abi")?.toString() == "true"
+        if (!splitPerAbi) {
+            ndk {
+                abiFilters.clear()
+                val targets = (project.findProperty("target-platform") as String?)
+                    ?.split(",")
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotEmpty() }
+                    .orEmpty()
+                for (t in targets) {
+                    when (t) {
+                        "android-arm64" -> abiFilters.add("arm64-v8a")
+                        "android-arm" -> abiFilters.add("armeabi-v7a")
+                        "android-x64" -> abiFilters.add("x86_64")
+                    }
                 }
             }
         }
