@@ -63,7 +63,7 @@ void main() {
   });
 
   test('规则集匹配：长词优先', () {
-    final set = db_set();
+    final set = ruleSetFromDb();
     // 「花椒油」是调料汤匙，「花椒」是辅料不补单位
     expect(set.lookup('花椒油')!.grp, '调料');
     expect(set.lookup('花椒油')!.unit, '汤匙');
@@ -115,7 +115,7 @@ void main() {
   });
 }
 
-IngredientRuleSet db_set() {
+IngredientRuleSet ruleSetFromDb() {
   final db = AppDb.memory();
   return db.ingredientRuleSet();
 }
