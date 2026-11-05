@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/paths.dart';
-import '../../widgets/indented_text.dart';
 import '../../widgets/photo_viewer.dart';
 import '../../core/pick_image.dart';
 import '../../core/units.dart';
@@ -36,10 +35,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   }
 
   Future<void> _edit() async {
-    final changed = await Navigator.of(context).push<bool>(
+    final savedId = await Navigator.of(context).push<int>(
       MaterialPageRoute(builder: (_) => RecipeEditPage(recipeId: widget.recipeId)),
     );
-    if (changed == true && mounted) _reload();
+    if (savedId != null && mounted) _reload();
   }
 
   Future<void> _delete() async {
@@ -199,6 +198,23 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 _sectionTitle(context, '步骤', icon: Icons.format_list_numbered),
                 const SizedBox(height: 8),
                 ..._stepTiles(context, d),
+                if (r.tips != null && r.tips!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  _sectionTitle(context, '小贴士', icon: Icons.lightbulb_outline),
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      r.tips!.trim(),
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ),
+                ],
                 if (d.logs.isNotEmpty) ...[
                   const SizedBox(height: 20),
                   _sectionTitle(context, '做过的记录', icon: Icons.history),
@@ -314,7 +330,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    IndentedText(
+                    Text(
                       d.steps[i].text,
                       style: const TextStyle(height: 1.45),
                     ),

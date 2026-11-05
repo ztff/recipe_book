@@ -13,6 +13,7 @@ import '../../core/theme.dart';
 import '../../data/backup.dart';
 import '../../data/seed.dart';
 import '../../main.dart';
+import 'ingredient_rules_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -48,6 +49,35 @@ class _SettingsPageState extends State<SettingsPage> {
 
   void _snack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _reapplyRules() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('重新套用识别规则？'),
+        content: const Text('会按当前规则重排所有菜谱的用料分组和单位，你手改过的会被覆盖。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('开始'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final ings = appDb.reapplyIngredientRules();
+    final steps = appDb.normalizeStepText();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('改了 ' + ings.toString() + ' 条用料、' + steps.toString() + ' 个步骤'),
+      ),
+    );
   }
 
   Future<void> _export() async {
@@ -224,6 +254,34 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ],
               ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text('识别', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Card(
+            color: scheme.surfaceContainerLow,
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.rule_outlined),
+                  title: const Text('识别规则'),
+                  subtitle: const Text('哪些算调料、没写单位时按什么勺算'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const IngredientRulesPage(),
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.sync_outlined),
+                  title: const Text('重新套用规则'),
+                  subtitle: const Text('按当前规则重排已有用料的分组和单位'),
+                  onTap: _reapplyRules,
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 16),

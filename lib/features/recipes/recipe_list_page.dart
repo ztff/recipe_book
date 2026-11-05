@@ -56,10 +56,17 @@ class _RecipeListPageState extends State<RecipeListPage> {
   }
 
   Future<void> _openEditor({RecipeRow? existing}) async {
-    final changed = await Navigator.of(context).push<bool>(
+    final savedId = await Navigator.of(context).push<int>(
       MaterialPageRoute(builder: (_) => RecipeEditPage(recipeId: existing?.id)),
     );
-    if (changed == true && mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    // 存完直接看成品，不用再点一次。
+    if (savedId == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => RecipeDetailPage(recipeId: savedId)),
+    );
+    if (mounted) setState(() {});
   }
 
   @override

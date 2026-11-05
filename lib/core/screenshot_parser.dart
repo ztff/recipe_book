@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'ingredient_rules.dart';
 import 'ocr.dart';
 import 'vocab.dart';
 
@@ -40,7 +41,10 @@ class ScreenRecipe {
 }
 
 class ScreenIngredient {
-  ScreenIngredient({required this.name, this.qty, this.unit});
+  ScreenIngredient({required this.name, this.qty, this.unit, this.group = ''});
+
+  /// 主料 / 辅料 / 调料。菜谱自带分组标题时用菜谱的，没有就按常识猜。
+  final String group;
   final String name;
   final double? qty;
   final String? unit;
@@ -68,6 +72,8 @@ const List<String> _adKeywords = [
   '广告', '旗舰店', '自营', '京东', '淘宝', '天猫', '拼多多', '抖音',
   '券后', '领券', '优惠券', '包邮', '立即购买', '去看看', '点击', '打开',
   '品牌', '种草', '下单', '折扣', '特价', '限时', '¥', '￥', '赞助',
+  // 电商/外卖广告卡片：朴朴超市、30分钟快送、到手价 这类整块文案
+  '超市', '快送', '到手价', '快至', '免配送', '抢购', '秒杀',
 ];
 
 /// 明显是界面元素、不该进菜谱的行。
@@ -83,19 +89,83 @@ final RegExp _stepHeader = RegExp(r'^(步骤|第)\s*(\d+)\s*(步)?');
 final RegExp _ingredientAmount = RegExp(
   r'^(.+?)\s*(\d+(?:[.٫]\d+)?|[\d.]+\s*[~\-—]\s*[\d.]+)\s*(克|g|G|千克|kg|斤|两|毫升|ml|mL|升|个|只|片|根|棵|把|勺|汤匙|茶匙|碗|杯|块|条|瓣|颗|粒|包|袋|瓶|盒|张|朵|撮|小把|大勺|小勺)?$',
 );
+/// 所有认得的单位。带数量和不带数量的正则都拼这一段，免得改漏。
+const String _unitWords =
+    '千克|毫升|汤匙|茶匙|小把|大勺|小勺|小碗|适量|少许|克|g|G|kg|ml|mL|升|'
+    '斤|两|个|只|片|根|棵|把|勺|碗|杯|块|条|瓣|颗|粒|包|袋|瓶|盒|张|朵|撮|'
+    '段|壶|盅|碟|罐|扎|筒|铲|盘|层|捏';
+
 final RegExp _amountOnly = RegExp(
-  r'^(\d+([~\-—]\d+)?)\s*(克|g|G|千克|kg|斤|两|毫升|ml|mL|升|个|只|片|根|棵|把|勺|汤匙|茶匙|碗|杯|块|条|瓣|颗|粒|包|袋|瓶|盒|张|朵|撮|小把|大勺|小勺|适量|少许)$',
+  r'^(\d+([~\-—]\d+)?)\s*(' + _unitWords + r')$',
 );
 
 /// 「一段」「半勺」「两大勺」这类中文数量词。
 final RegExp _cnAmount = RegExp(
-  r'^(.+?)s*((?:半|一|二|两|三|四|五|六|七|八|九|十|几)?[大中小]?(?:勺|汤匙|茶匙|碗|杯|个|只|片|根|棵|把|块|条|瓣|颗|粒|包|袋|瓶|盒|张|朵|撮|段))$',
+  r'^(.+?)\s*((?:半|一|二|两|三|四|五|六|七|八|九|十|几)?[大中小]?\s*'
+  r'(?:' + _unitWords + r'))$',
 );
 
+/// 整行只有数量：「4勺」「一壶」「半勺」「壶」「4」。
+/// PaddleOCR 经常把名称和数量拆成两行，这种行要能挂回上一条。
+/// 返回 (数量, 单位)，不是数量行返回 null。
+(double?, String?)? _qtyOnly(String text) {
+  final t = text.trim();
+  if (t.isEmpty) return null;
+
+  final bare = RegExp(r'^(\d+(?:\.\d+)?)$').firstMatch(t);
+  if (bare != null) return (double.tryParse(bare.group(1)!), null);
+
+  // 单独一个中文数字：「一」「半」「两」。单位在另一行的话就是这种拆法。
+  final cnBare = RegExp(r'^([半一二两三四五六七八九十])$').firstMatch(t);
+  if (cnBare != null) return (_cnDigits[cnBare.group(1)!], null);
+
+  final numUnit =
+      RegExp(r'^(\d+(?:\.\d+)?)\s*(' + _unitWords + r')$').firstMatch(t);
+  if (numUnit != null) {
+    return (double.tryParse(numUnit.group(1)!), numUnit.group(2));
+  }
+
+  final cn = RegExp(
+    r'^((?:半|一|二|两|三|四|五|六|七|八|九|十|几)?[大中小]?\s*(?:' +
+        _unitWords +
+        r'))$',
+  ).firstMatch(t);
+  if (cn != null) {
+    final split = _splitCnAmount(cn.group(1)!);
+    return (split.$1, split.$2.isEmpty ? null : split.$2);
+  }
+  return null;
+}
+
 /// 「任意多少」「按口味调料」这类没法量化的写法。
-final RegExp _vagueAmount = RegExp(r'^(.+?)s*(适量|少许|若干|任意多少|随意|按口味.*|依口味.*)$');
+final RegExp _vagueAmount = RegExp(r'^(.+?)\s*(适量|少许|若干|任意多少|随意|按口味.*|依口味.*)$');
 
 bool _hasAny(String text, List<String> keys) => keys.any((k) => text.contains(k));
+
+/// 中文数量词转成数字：「一小把」→ (1, 小把)、「半勺」→ (0.5, 勺)。
+/// 「几勺」这种约数返回 (null, 勺)。
+const Map<String, double> _cnDigits = {
+  '半': 0.5,
+  '一': 1,
+  '二': 2,
+  '两': 2,
+  '三': 3,
+  '四': 4,
+  '五': 5,
+  '六': 6,
+  '七': 7,
+  '八': 8,
+  '九': 9,
+  '十': 10,
+};
+
+(double?, String) _splitCnAmount(String token) {
+  final t = token.trim();
+  if (t.isEmpty) return (null, t);
+  final v = _cnDigits[t[0]];
+  if (v == null) return (null, t);
+  return (v, t.substring(1).trim());
+}
 
 /// 括号没闭合的续行（「1个（孩子吃我没」+「放)」）合回上一行。
 List<OcrLine> _joinContinuation(List<OcrLine> lines) {
@@ -157,8 +227,22 @@ List<OcrLine> _mergeRowFragments(List<OcrLine> lines) {
       continue;
     }
     row.sort((a, b) => a.left.compareTo(b.left));
-    final buf = StringBuffer();
+    // 截图时页面在滚动会留下重影：同一视觉行里，某段文字的横向范围
+    // 整个落在另一段里面，那是残影不是内容。真实的两列布局
+    //（名称 / 数量）左右是分开的，不会被判成包含。
+    // 残影和正常分列（名称 / 数量）在坐标上长得一样，靠内容区分：
+    // 残影的字一定来自同行那段正文，正常两列各说各的。
+    final kept = <OcrLine>[];
     for (final piece in row) {
+      final swallowed = kept.any((k) =>
+          piece.left >= k.left - 2 &&
+          piece.right <= k.right + 2 &&
+          _charOverlap(piece.text, k.text) >= 0.3);
+      if (swallowed) continue;
+      kept.add(piece);
+    }
+    final buf = StringBuffer();
+    for (final piece in kept) {
       final t = piece.text.trim();
       if (t.isEmpty) continue;
       if (buf.isEmpty) {
@@ -189,20 +273,31 @@ List<OcrLine> _mergeRowFragments(List<OcrLine> lines) {
 }
 
 /// 把整张截图的识别结果解析成一道菜。
-ScreenRecipe parseScreenRecipe(OcrLayout layout) {
+/// [rules] 传数据库里的规则集，不传就用内置的。
+ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
   if (layout.isEmpty) return ScreenRecipe();
 
   final usable = <OcrLine>[];
   var dropped = 0;
+  // 用料区的起点全靠标题行定位，但标题行常常带着界面按钮
+  //（「用料  丢进菜篮子」），会被下面的界面词整行吃掉，
+  // 所以在过滤之前先把它认出来。
+  double? ingTop;
   for (final line in _joinContinuation(_mergeRowFragments(layout.lines))) {
     final t = line.text.trim();
     if (t.isEmpty) continue;
+    if (ingTop == null && _isIngredientHeaderLine(t)) {
+      ingTop = line.top;
+      dropped++;
+      continue;
+    }
     if (_hasAny(t, _adKeywords) || _hasAny(t, _uiKeywords)) {
       dropped++;
       continue;
     }
     // 状态栏：时钟、电量、信号格之类，不能当成菜名。
-    if (_isStatusChrome(t)) {
+    // 只在截图最顶上判，否则用料区里「4」这种只剩数字的数量行会被误杀。
+    if (line.top < 150 && _isStatusChrome(t)) {
       dropped++;
       continue;
     }
@@ -210,7 +305,6 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
   }
   if (usable.isEmpty) return ScreenRecipe(droppedLines: dropped);
 
-  double? ingTop;
   double? tipsTop;
   final stepHeads = <MapEntry<double, int>>[];
   for (final line in usable) {
@@ -239,19 +333,53 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
 
   // 说明一定紧贴「用料」标题上方，广告和账号名都在更上面。
   // 所以从最靠近用料的一行往前收，遇到断行就停。
+  // 广告卡片常常夹在正文和「用料」之间（朴朴超市那种），一行行往上收
+  // 会把商品名「上装」当成说明就断掉了。按行距突变切块，取最靠近用料、
+  // 且整块都像正文的那一块。
   if (headLines.length > 1) {
-    final tail = <String>[];
-    double? prevTop;
+    final blocks = <List<OcrLine>>[];
+    var cur = <OcrLine>[];
+    double? prev;
     for (var i = headLines.length - 1; i >= 1; i--) {
       final line = headLines[i];
-      final t = line.text.trim();
-      if (_isNoise(t)) break;
       final h = (line.bottom - line.top).clamp(1.0, 400.0);
-      if (prevTop != null && (prevTop - line.top) > h * 2.4) break;
-      tail.insert(0, t);
-      prevTop = line.top;
+      if (prev != null && (prev - line.top) > h * 2.4) {
+        if (cur.isNotEmpty) blocks.add(cur);
+        cur = <OcrLine>[];
+      }
+      cur.add(line);
+      prev = line.top;
     }
-    if (tail.isNotEmpty) description = tail.join('\n');
+    if (cur.isNotEmpty) blocks.add(cur);
+
+    for (final block in blocks) {
+      // 紧挨着用料的那一行如果本身就是噪声（广告卡片的「上装」），
+      // 说明这一块是广告，整块跳过。
+      if (_isNoise(block.first.text.trim())) continue;
+      final picked = <OcrLine>[];
+      for (final e in block) {
+        if (_isNoise(e.text.trim())) break;
+        picked.add(e);
+      }
+      if (picked.isEmpty) continue;
+      // 广告卡片里孤零零一行「高弹扩容，不紧勒保暖无束缚」也像中文，
+      // 但真正的说明至少是两行连续正文，或者一行够长的句子。
+      if (picked.length == 1 && picked.first.text.trim().length < 15) {
+        continue;
+      }
+      // 屏幕宽度造成的折行不算分段：上一行没有句末标点就接上。
+      final parts = <String>[];
+      for (final e in picked.reversed) {
+        final t = e.text.trim();
+        if (parts.isNotEmpty && !_endsSentence(parts.last)) {
+          parts[parts.length - 1] = parts.last + t;
+        } else {
+          parts.add(t);
+        }
+      }
+      description = parts.join('\n');
+      break;
+    }
   }
   final cleaned = cleanDishName(name);
   if (cleaned != null && cleaned != name) {
@@ -264,34 +392,58 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
   if (ingTop != null) {
     final endY = _firstAfter(stepHeads, tipsTop, layout.height.toDouble(), ingTop);
     final ingLines = usable.where((e) => e.top >= ingTop! && e.top < endY).toList();
+    var curGroup = '';
     for (var i = 0; i < ingLines.length; i++) {
       final t = ingLines[i].text.trim();
-      if (ingredients.isEmpty && _ingredientHeaders.any((h) => t.contains(h))) continue;
-      if (t.length < 2) continue;
-      // 「名称」和「数量」被识别成两行时，数量行单独出现，先认这种
-      final amount = _amountOnly.firstMatch(t);
-      if (amount != null) {
-        if (ingredients.isNotEmpty) {
-          final last = ingredients.removeLast();
-          ingredients.add(ScreenIngredient(
-            name: last.name,
-            qty: double.tryParse((amount.group(1) ?? '').split(RegExp(r'[~\-—]')).first),
-            unit: amount.group(3),
-          ));
-        }
+      // 「主料」「调料」这类小标题单独占一行，切换后面几行的归属。
+      final head = t.replaceAll(RegExp(r'[：:（(].*$'), '').trim();
+      if (head.length <= 4 && kIngredientGroupHeaders.contains(head)) {
+        curGroup = head;
         continue;
       }
+      if (ingredients.isEmpty && _ingredientHeaders.any((h) => t.contains(h))) continue;
+
+      // 「名称」和「数量」被识别成两行时，数量行会单独出现。
+      // 这一步要排在长度过滤之前，否则只认出「4」的那种行会被当成单字丢掉。
+      final q = _qtyOnly(t);
+      if (q != null && ingredients.isNotEmpty) {
+        final last = ingredients.last;
+        // 数量和单位可能分两行下来，各自补各自缺的那半。
+        final takeQty = q.$1 != null && last.qty == null;
+        final takeUnit =
+            q.$2 != null && (last.unit == null || last.unit!.isEmpty);
+        if (takeQty || takeUnit) {
+          ingredients.removeLast();
+          ingredients.add(ScreenIngredient(
+            name: last.name,
+            qty: takeQty ? q.$1 : last.qty,
+            unit: takeUnit ? q.$2 : last.unit,
+            group: last.group,
+          ));
+          continue;
+        }
+      }
+
+      if (t.length < 2) continue;
       final parsed = _parseAmount(t);
       if (parsed != null) {
-        ingredients.add(parsed);
+        ingredients.add(ScreenIngredient(
+          name: parsed.name,
+          qty: parsed.qty,
+          unit: parsed.unit,
+          group: curGroup,
+        ));
         continue;
       }
       // 「葱 一段」「五花肉 任意多少」「盐 按口味调料」：数量是文字不是数字
       final cn = _cnAmount.firstMatch(t);
       if (cn != null && (cn.group(1) ?? '').trim().isNotEmpty) {
+        final split = _splitCnAmount(cn.group(2) ?? '');
         ingredients.add(ScreenIngredient(
           name: (cn.group(1) ?? '').trim(),
-          unit: cn.group(2),
+          qty: split.$1,
+          unit: split.$2.isEmpty ? null : split.$2,
+          group: curGroup,
         ));
         continue;
       }
@@ -300,10 +452,13 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
         ingredients.add(ScreenIngredient(
           name: (vague.group(1) ?? '').trim(),
           unit: vague.group(2),
+          group: curGroup,
         ));
         continue;
       }
-      if (t.length <= 20 && !_isJunkName(t)) ingredients.add(ScreenIngredient(name: t));
+      if (t.length <= 20 && !_isJunkName(t)) {
+        ingredients.add(ScreenIngredient(name: t, group: curGroup));
+      }
     }
   }
 
@@ -322,7 +477,7 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
         .where((e) => e.isNotEmpty)
         .toList();
     final rect = _findImageBlock(layout, startY, endY, body);
-    steps.add(ScreenStep(text: body.join('\n'), imageRect: rect));
+    steps.add(ScreenStep(text: _joinBySentence(body), imageRect: rect));
   }
 
   // 小贴士
@@ -333,7 +488,7 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
         .map((e) => e.text.trim())
         .where((e) => e.isNotEmpty)
         .toList();
-    if (body.isNotEmpty) tips = body.join('\n');
+    if (body.isNotEmpty) tips = _joinBySentence(body);
   }
 
   return ScreenRecipe(
@@ -341,8 +496,7 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
     nameConfident: nameConfident,
     description: description == null ? null : fixTypos(description),
     ingredients: [
-      for (final i in ingredients)
-        ScreenIngredient(name: fixTypos(i.name), qty: i.qty, unit: i.unit),
+      for (final i in ingredients) _finalizeIngredient(i, rules),
     ],
     steps: [
       for (final s in steps)
@@ -351,6 +505,24 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout) {
     tips: tips == null ? null : fixTypos(tips),
     droppedLines: dropped,
   );
+}
+
+/// OCR 按屏幕宽度断行，一句话常被切成两半。上一行没写完就接上，
+/// 只在句末标点处换行，显示出来才像人写的。
+String joinBySentence(List<String> lines) => _joinBySentence(lines);
+
+String _joinBySentence(List<String> lines) {
+  final parts = <String>[];
+  for (final raw in lines) {
+    final t = raw.trim();
+    if (t.isEmpty) continue;
+    if (parts.isNotEmpty && !_endsSentence(parts.last)) {
+      parts[parts.length - 1] = parts.last + t;
+    } else {
+      parts.add(t);
+    }
+  }
+  return parts.join('\n');
 }
 
 double _firstAfter(
@@ -375,6 +547,18 @@ bool _isJunkName(String text) {
   return chinese < t.length * 0.5;
 }
 
+/// 用料标题行。整行等于标题，或者标题后面跟的是界面按钮文字
+///（「用料  丢进菜篮子」）。「主料是排骨」这种正文不算。
+bool _isIngredientHeaderLine(String text) {
+  for (final h in _ingredientHeaders) {
+    if (text == h) return true;
+    if (text.startsWith(h) && _hasAny(text.substring(h.length), _uiKeywords)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// 明显的识别噪声：太短、或中文占比过低（广告卡上的乱码）。
 /// 状态栏/系统界面残留：时钟、电量、信号格、纯编号行。
 ///
@@ -386,11 +570,58 @@ bool _isStatusChrome(String text) {
   return stripped.isEmpty;
 }
 
+/// 片段里有几成的字也在 [host] 里出现过。界面滚动留下的文字残影
+/// 通常和正文高度重合，「红薯叶」和「1把」这种正常分列几乎为 0。
+double _charOverlap(String piece, String host) {
+  final chars = piece.replaceAll(RegExp(r'[\s，。、！？：；（）()·]'), '').split('');
+  if (chars.isEmpty) return 0;
+  final hostSet = host.split('').toSet();
+  final hit = chars.where(hostSet.contains).length;
+  return hit / chars.length;
+}
+
+/// 这行是不是说完了（句末标点）。用来判断下一行是折行还是新段落。
+bool _endsSentence(String s) {
+  if (s.isEmpty) return true;
+  return RegExp(r'[。！？!?…~～」》）)]$').hasMatch(s);
+}
+
 bool _isNoise(String text) {
   final t = text.trim();
   if (t.length < 8) return true;
   final chinese = RegExp(r'[\u4e00-\u9fa5]').allMatches(t).length;
   return chinese < t.length * 0.6;
+}
+
+/// 词法解析完再统一修错字、补分组、补量具。
+/// 菜谱自己写了分组的就尊重菜谱，没写的按常识猜。
+ScreenIngredient _finalizeIngredient(ScreenIngredient i, IngredientRuleSet? rules) {
+  final name = fixTypos(i.name);
+  final rule = (rules ?? IngredientRuleSet.builtin).lookup(name);
+
+  // 菜谱自己写了分组的最优先，其次是数据库规则，最后才按常识猜。
+  final grp = i.group.isNotEmpty
+      ? i.group
+      : (rule != null && rule.grp.isNotEmpty
+          ? rule.grp
+          : guessIngredientGroup(name));
+
+  // 命中规则就完全按规则来：规则里的单位是空的，意思就是「这个别补」。
+  final blank = i.unit == null || i.unit!.trim().isEmpty;
+  final String? unit;
+  if (rule != null) {
+    unit = blank && rule.unit.isNotEmpty ? rule.unit : i.unit;
+  } else {
+    unit = guessIngredientUnit(name, i.qty, i.unit);
+  }
+  // 名字尾巴上挂着的「一」「半」，其实是数量。
+  final fixed = splitTrailingQuantity(name, unit, i.qty);
+  return ScreenIngredient(
+    name: fixed.name,
+    qty: fixed.qty,
+    unit: unit,
+    group: grp,
+  );
 }
 
 ScreenIngredient? _parseAmount(String text) {

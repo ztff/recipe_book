@@ -10,6 +10,7 @@ import '../../core/ocr.dart';
 import '../../core/paths.dart';
 import '../../core/pick_image.dart';
 import '../../core/pinyin.dart';
+import '../../core/ingredient_rules.dart';
 import '../../core/screenshot_parser.dart';
 import '../../data/db.dart';
 import '../../main.dart';
@@ -53,6 +54,7 @@ class RecipeEditPage extends StatefulWidget {
 class _RecipeEditPageState extends State<RecipeEditPage> {
   final _nameCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
+  final _tipsCtrl = TextEditingController();
   final _tagCtrl = TextEditingController();
   String _cuisine = '家常';
   String _taste = '咸鲜';
@@ -89,6 +91,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       if (d != null) {
         _nameCtrl.text = d.recipe.name;
         _descCtrl.text = d.recipe.description ?? '';
+        _tipsCtrl.text = d.recipe.tips ?? '';
         _cuisine = d.recipe.cuisine;
         _taste = d.recipe.taste;
         _difficulty = d.recipe.difficulty;
@@ -130,6 +133,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     _messenger?.clearSnackBars();
     _nameCtrl.dispose();
     _descCtrl.dispose();
+    _tipsCtrl.dispose();
     _tagCtrl.dispose();
     for (final i in _ings) {
       i.dispose();
@@ -252,7 +256,8 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         return;
       }
 
-      final parsed = parseScreenRecipe(layout);
+      // 用数据库里的规则，设置里改过的分组和单位立刻生效。
+      final parsed = parseScreenRecipe(layout, rules: appDb.ingredientRuleSet());
       if (parsed.isEmpty) {
         if (!mounted) return;
         setState(() {
@@ -293,6 +298,9 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         if (parsed.description != null && parsed.description!.isNotEmpty) {
           _descCtrl.text = parsed.description!;
         }
+        if (parsed.tips != null && parsed.tips!.isNotEmpty) {
+          _tipsCtrl.text = parsed.tips!;
+        }
         for (final i in _ings) {
           i.dispose();
         }
@@ -301,6 +309,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
           _ings.add(_IngEdit(
             name: i.name,
             qty: i.qty == null ? '' : _trimNum(i.qty!),
+            grp: i.group.isEmpty ? '主料' : i.group,
             unit: i.unit ?? (i.qty == null ? '' : '克'),
           ));
         }
@@ -341,9 +350,10 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
   List<Object?> _snapshotForm() => [
         _nameCtrl.text,
         _descCtrl.text,
-        [for (final i in _ings) [i.nameCtrl.text, i.qtyCtrl.text, i.unit]],
+        [for (final i in _ings) [i.nameCtrl.text, i.qtyCtrl.text, i.unit, i.grp]],
         [for (final s in _steps) [s.textCtrl.text, s.timerSeconds, s.imagePath]],
         _imagePath,
+        _tipsCtrl.text,
       ];
 
   void _restoreForm(List<Object?> snap) {
@@ -361,6 +371,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         _ings.add(_IngEdit(
           name: v[0] as String,
           qty: v[1] as String,
+          grp: v[3] as String,
           unit: v[2] as String,
         ));
       }
@@ -374,6 +385,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         _steps.add(_StepEdit(text: v[0] as String, timerSeconds: v[1] as int?, imagePath: v[2] as String?));
       }
       _imagePath = snap[4] as String?;
+      _tipsCtrl.text = snap[5] as String;
       if (_ings.isEmpty) _ings.add(_IngEdit());
       if (_steps.isEmpty) _steps.add(_StepEdit());
     });
@@ -452,12 +464,13 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       minutes: _minutes,
       servings: _servings,
       imagePath: _imagePath,
+      tips: _tipsCtrl.text.trim().isEmpty ? null : _tipsCtrl.text.trim(),
       tags: List<String>.from(_tags),
       ingredients: ings,
       steps: steps,
     );
-    appDb.saveRecipe(draft, searchKey(name));
-    Navigator.of(context).pop(true);
+    final savedId = appDb.saveRecipe(draft, searchKey(name));
+    Navigator.of(context).pop(savedId);
   }
 
   @override
@@ -567,6 +580,17 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
             maxLines: 2,
             decoration: const InputDecoration(labelText: '一句话说明（可选）'),
           ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _tipsCtrl,
+            maxLines: 4,
+            minLines: 1,
+            decoration: const InputDecoration(
+              labelText: '小贴士（可选）',
+              hintText: '火候、替换食材、翻车教训都写这儿',
+              alignLabelWithHint: true,
+            ),
+          ),
           const SizedBox(height: 16),
           Row(
             children: [
@@ -670,6 +694,11 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
               Text('食材', style: Theme.of(context).textTheme.titleMedium),
               const Spacer(),
               TextButton.icon(
+                onPressed: _applyRulesToForm,
+                icon: const Icon(Icons.auto_fix_high, size: 18),
+                label: const Text('整理'),
+              ),
+              TextButton.icon(
                 onPressed: () => setState(() => _ings.add(_IngEdit())),
                 icon: const Icon(Icons.add, size: 18),
                 label: const Text('加一行'),
@@ -705,9 +734,14 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           GestureDetector(
-            onTap: () {
-              final i = kIngredientGroups.indexOf(e.grp);
-              setState(() => e.grp = kIngredientGroups[(i + 1) % kIngredientGroups.length]);
+            onTap: () async {
+              final picked = await _askChoice(
+                title: '用料分组',
+                options: kIngredientGroups,
+                current: e.grp,
+                hint: '自定义分组',
+              );
+              if (picked != null && mounted) setState(() => e.grp = picked);
             },
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -739,14 +773,29 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
           const SizedBox(width: 6),
           SizedBox(
             width: 86,
-            child: DropdownButtonFormField<String>(
-              initialValue: e.unit,
-              isDense: true,
-              items: [
-                const DropdownMenuItem(value: '', child: Text('无')),
-                for (final u in kUnits) DropdownMenuItem(value: u, child: Text(u)),
-              ],
-              onChanged: (v) => setState(() => e.unit = v ?? ''),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () async {
+                final picked = await _askChoice(
+                  title: '单位',
+                  options: kUnits,
+                  current: e.unit,
+                  hint: '自定义单位',
+                  allowEmpty: true,
+                );
+                if (picked != null && mounted) setState(() => e.unit = picked);
+              },
+              child: InputDecorator(
+                decoration: const InputDecoration(
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                ),
+                child: Text(
+                  e.unit.isEmpty ? '无' : e.unit,
+                  style: const TextStyle(fontSize: 13),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ),
           ),
           IconButton(
@@ -894,6 +943,130 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     );
   }
 
+  /// 按识别规则重排当前表单：用料分组、缺的单位，以及步骤的换行。
+  /// 只改这一份表单，保存才落库。
+  void _applyRulesToForm() {
+    final rules = appDb.ingredientRuleSet();
+    var touched = 0;
+    setState(() {
+      for (final e in _ings) {
+        final name = e.nameCtrl.text.trim();
+        if (name.isEmpty) continue;
+        final rule = rules.lookup(name);
+        if (rule != null) {
+          if (rule.grp.isNotEmpty && e.grp != rule.grp) {
+            e.grp = rule.grp;
+            touched++;
+          }
+          if (rule.unit.isNotEmpty && e.unit.trim().isEmpty) {
+            e.unit = rule.unit;
+            touched++;
+          }
+        }
+        // 「开水一」+ 壶 这种，把尾巴上的数字还原成数量
+        final qty = double.tryParse(e.qtyCtrl.text.trim());
+        final fixed = splitTrailingQuantity(name, e.unit, qty);
+        if (fixed.name != name) {
+          e.nameCtrl.text = fixed.name;
+          touched++;
+        }
+        if (fixed.qty != null && qty == null) {
+          e.qtyCtrl.text = _trimNum(fixed.qty!);
+          touched++;
+        }
+      }
+      for (final s in _steps) {
+        final text = s.textCtrl.text;
+        final fixed = joinBySentence(text.split('\n'));
+        if (fixed != text) {
+          s.textCtrl.text = fixed;
+          touched++;
+        }
+      }
+    });
+    _snack(
+      touched == 0 ? '已经是整理好的状态了' : '整理了 ' + touched.toString() + ' 处',
+    );
+  }
+
+  /// 分组 / 单位这类「常用几个 + 想自己填也行」的选择。
+  Future<String?> _askChoice({
+    required String title,
+    required List<String> options,
+    required String current,
+    String hint = '自定义',
+    bool allowEmpty = false,
+  }) async {
+    final ctrl = TextEditingController();
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(ctx).textTheme.titleMedium),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    if (allowEmpty)
+                      ChoiceChip(
+                        label: const Text('无'),
+                        selected: current.isEmpty,
+                        onSelected: (_) => Navigator.of(ctx).pop(''),
+                      ),
+                    for (final o in options)
+                      ChoiceChip(
+                        label: Text(o),
+                        selected: o == current,
+                        onSelected: (_) => Navigator.of(ctx).pop(o),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: ctrl,
+                        textInputAction: TextInputAction.done,
+                        onSubmitted: (v) {
+                          final t = v.trim();
+                          if (t.isNotEmpty) Navigator.of(ctx).pop(t);
+                        },
+                        decoration: InputDecoration(
+                          labelText: hint,
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      onPressed: () {
+                        final t = ctrl.text.trim();
+                        if (t.isNotEmpty) Navigator.of(ctx).pop(t);
+                      },
+                      child: const Text('确定'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    ctrl.dispose();
+    return result;
+  }
+
   Future<void> _pickStepImage(int index) async {
     final stored = await pickAndStoreImage();
     if (stored == null) return;
@@ -901,23 +1074,24 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     setState(() => _steps[index].imagePath = stored);
   }
 
-  /// 常用时长；自定义的走 [ChoiceChip] 后面那个「自定义」入口。
+  /// 常用时长：1 / 3 / 5 / 10 / 30 分钟，其余的走最后那个「自定义」。
   static const List<int?> _timerPresets = [
     null,
     60,
-    120,
     180,
-    240,
     300,
     600,
-    1200,
+    1800,
   ];
 
   bool _isCustomTimer(int? sec) => sec != null && !_timerPresets.contains(sec);
 
   Future<void> _pickCustomTimer(int index) async {
     final current = _steps[index].timerSeconds ?? 300;
-    final ctrl = TextEditingController(text: (current ~/ 60).toString());
+    final hourCtrl = TextEditingController(text: (current ~/ 3600).toString());
+    final ctrl = TextEditingController(
+      text: ((current % 3600) ~/ 60).toString(),
+    );
     final secCtrl = TextEditingController(
       text: (current % 60).toString().padLeft(2, '0'),
     );
@@ -928,6 +1102,14 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         content: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Expanded(
+              child: TextField(
+                controller: hourCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: '时'),
+              ),
+            ),
+            const SizedBox(width: 12),
             Expanded(
               child: TextField(
                 controller: ctrl,
@@ -958,14 +1140,24 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       ),
     );
     if (ok != true) return;
+    final h = int.tryParse(hourCtrl.text.trim()) ?? 0;
     final m = int.tryParse(ctrl.text.trim()) ?? 0;
     final s = int.tryParse(secCtrl.text.trim()) ?? 0;
-    final total = (m * 60 + s).clamp(5, 180 * 60);
+    final total = (h * 3600 + m * 60 + s).clamp(5, 24 * 3600);
     if (mounted) setState(() => _steps[index].timerSeconds = total);
   }
 
   String _timerLabel(int sec) {
     if (sec < 60) return sec.toString() + ' 秒';
+    if (sec >= 3600) {
+      final h = sec ~/ 3600;
+      final m = (sec % 3600) ~/ 60;
+      final s = sec % 60;
+      final out = h.toString() + ' 时';
+      if (m == 0 && s == 0) return out;
+      if (s == 0) return out + ' ' + m.toString() + ' 分';
+      return out + ' ' + m.toString() + ' 分 ' + s.toString() + ' 秒';
+    }
     if (sec % 60 == 0) return (sec ~/ 60).toString() + ' 分';
     return (sec ~/ 60).toString() + ' 分 ' + (sec % 60).toString() + ' 秒';
   }

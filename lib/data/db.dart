@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
 
+import '../core/ingredient_rules.dart';
 import '../core/paths.dart';
+import '../core/screenshot_parser.dart';
 
 class RecipeRow {
   RecipeRow({
@@ -18,6 +20,7 @@ class RecipeRow {
     required this.minutes,
     required this.servings,
     this.imagePath,
+    this.tips,
     required this.tagsText,
     required this.cookCount,
     this.lastCookedAt,
@@ -36,6 +39,9 @@ class RecipeRow {
   final int minutes;
   final int servings;
   final String? imagePath;
+
+  /// 小贴士：成品图下方的补充说明，可能有多行。
+  final String? tips;
   final String tagsText;
   final int cookCount;
   final DateTime? lastCookedAt;
@@ -57,6 +63,7 @@ class RecipeRow {
         minutes: (r['minutes'] as int?) ?? 30,
         servings: (r['servings'] as int?) ?? 2,
         imagePath: r['image_path'] as String?,
+        tips: r['tips'] as String?,
         tagsText: (r['tags_text'] as String?) ?? '',
         cookCount: (r['cook_count'] as int?) ?? 0,
         lastCookedAt: _dt(r['last_cooked_at']),
@@ -195,6 +202,7 @@ class RecipeDraft {
     this.minutes = 30,
     this.servings = 2,
     this.imagePath,
+    this.tips,
     this.tags = const [],
     required this.ingredients,
     required this.steps,
@@ -209,9 +217,38 @@ class RecipeDraft {
   final int minutes;
   final int servings;
   final String? imagePath;
+  final String? tips;
   final List<String> tags;
   final List<DraftIngredient> ingredients;
   final List<DraftStep> steps;
+}
+
+/// 一条可维护的识别规则：某个食材归哪一组、没写单位时补什么。
+class IngredientRuleRow {
+  IngredientRuleRow({
+    required this.id,
+    required this.name,
+    required this.grp,
+    required this.unit,
+    required this.builtin,
+    required this.enabled,
+  });
+
+  final int id;
+  final String name;
+  final String grp;
+  final String unit;
+  final bool builtin;
+  final bool enabled;
+
+  factory IngredientRuleRow.fromRow(Row r) => IngredientRuleRow(
+        id: r['id'] as int,
+        name: r['name'] as String,
+        grp: (r['grp'] as String?) ?? '',
+        unit: (r['unit'] as String?) ?? '',
+        builtin: ((r['builtin'] as int?) ?? 0) == 1,
+        enabled: ((r['enabled'] as int?) ?? 1) == 1,
+      );
 }
 
 class StatsSummary {
@@ -254,6 +291,157 @@ class AppDb {
   /// 测试/临时库用（内存）
   factory AppDb.memory() => AppDb._(sqlite3.openInMemory());
 
+  /// 把内置规则补进数据库。只插不存在的，用户改过的一律不碰。
+  void syncBuiltinIngredientRules() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final r in builtinIngredientRules()) {
+      _db.execute(
+        'INSERT OR IGNORE INTO ingredient_rules (name, grp, unit, builtin, enabled, updated_at) '
+        'VALUES (?,?,?,1,1,?)',
+        [r.name, r.grp, r.unit, now],
+      );
+    }
+    _migrateIngredientRuleValues();
+  }
+
+  /// 内置规则本身改了口径（比如水从调料改主料）时，把还停在旧值的行跟一下。
+  /// 用户手动改成别的分组的，一律不碰。
+  void _migrateIngredientRuleValues() {
+    final raw = getSetting('ingredient_rule_version');
+    final version = raw == null ? 0 : (int.tryParse(raw) ?? 0);
+    if (version >= 2) return;
+    for (final w in kWaterNames) {
+      _db.execute(
+        "UPDATE ingredient_rules SET grp = '主料' "
+        "WHERE name = ? AND builtin = 1 AND grp = '调料'",
+        [w],
+      );
+    }
+    setSetting('ingredient_rule_version', '2');
+  }
+
+  List<IngredientRuleRow> ingredientRules({String keyword = ''}) {
+    final k = keyword.trim();
+    final rows = k.isEmpty
+        ? _db.select('SELECT * FROM ingredient_rules ORDER BY grp, name')
+        : _db.select(
+            "SELECT * FROM ingredient_rules WHERE name LIKE ? ORDER BY grp, name",
+            ['%' + k + '%'],
+          );
+    return rows.map(IngredientRuleRow.fromRow).toList();
+  }
+
+  /// 识别时用：只要启用的，转成解析器认识的规则集。
+  IngredientRuleSet ingredientRuleSet() {
+    final rows = _db.select(
+      'SELECT name, grp, unit FROM ingredient_rules WHERE enabled = 1',
+    );
+    return IngredientRuleSet(rows.map(
+      (r) => IngredientRule(
+        r['name'] as String,
+        (r['grp'] as String?) ?? '',
+        (r['unit'] as String?) ?? '',
+      ),
+    ));
+  }
+
+  /// 新增或按名字覆盖一条规则。
+  void saveIngredientRule({
+    required String name,
+    required String grp,
+    required String unit,
+    bool enabled = true,
+  }) {
+    final n = name.trim();
+    if (n.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _db.execute(
+      'INSERT INTO ingredient_rules (name, grp, unit, builtin, enabled, updated_at) '
+      'VALUES (?,?,?,0,?,?) '
+      'ON CONFLICT(name) DO UPDATE SET grp=excluded.grp, unit=excluded.unit, enabled=excluded.enabled, updated_at=excluded.updated_at',
+      [n, grp, unit, enabled ? 1 : 0, now],
+    );
+  }
+
+  void setIngredientRuleEnabled(int id, bool enabled) {
+    _db.execute(
+      'UPDATE ingredient_rules SET enabled = ? WHERE id = ?',
+      [enabled ? 1 : 0, id],
+    );
+  }
+
+  void deleteIngredientRule(int id) {
+    _db.execute('DELETE FROM ingredient_rules WHERE id = ?', [id]);
+  }
+
+  /// 恢复出厂：清空后重新灌内置，用户自己加的就没了。
+  void resetIngredientRules() {
+    _db.execute('DELETE FROM ingredient_rules');
+    syncBuiltinIngredientRules();
+  }
+
+  /// 把已经存下来的步骤按「句末标点才换行」重新整理一遍。
+  /// 老版本导入的步骤是屏幕折行原样存的，读起来断得很碎。
+  /// 返回改动的步骤数。
+  int normalizeStepText() {
+    final rows = _db.select('SELECT id, text FROM steps ORDER BY id');
+    var changed = 0;
+    _db.execute('BEGIN');
+    try {
+      for (final r in rows) {
+        final text = r['text'] as String;
+        final fixed = joinBySentence(text.split('\n'));
+        if (fixed == text) continue;
+        _db.execute('UPDATE steps SET text = ? WHERE id = ?', [fixed, r['id']]);
+        changed++;
+      }
+      _db.execute('COMMIT');
+    } catch (e) {
+      _db.execute('ROLLBACK');
+      rethrow;
+    }
+    return changed;
+  }
+
+  /// 拿所有菜谱的用料按当前规则重算分组和单位。
+  /// 返回改动的条数。会覆盖手改过的分组，调用前要确认。
+  int reapplyIngredientRules() {
+    final rules = ingredientRuleSet();
+    final rows = _db.select(
+      'SELECT id, name, unit FROM ingredients ORDER BY id',
+    );
+    var changed = 0;
+    _db.execute('BEGIN');
+    try {
+      for (final r in rows) {
+        final name = r['name'] as String;
+        final rule = rules.lookup(name);
+        if (rule == null) continue;
+        final unit = r['unit'] as String?;
+        final blank = unit == null || unit.trim().isEmpty;
+        final newUnit = blank && rule.unit.isNotEmpty ? rule.unit : unit;
+        final newGrp = rule.grp.isNotEmpty ? rule.grp : null;
+        if (newGrp == null && newUnit == unit) continue;
+
+        final old = _db.select(
+          'SELECT grp FROM ingredients WHERE id = ?',
+          [r['id']],
+        );
+        final oldGrp = (old.isEmpty ? null : old.first['grp'] as String?);
+        if (newGrp != null && newGrp != oldGrp) changed++;
+        _db.execute(
+          'UPDATE ingredients SET grp = COALESCE(?, grp), unit = ? WHERE id = ?',
+          [newGrp, newUnit, r['id']],
+        );
+      }
+      _db.execute('COMMIT');
+    } catch (e) {
+      _db.execute('ROLLBACK');
+      rethrow;
+    }
+    return changed;
+  }
+
   void _migrate() {
     _db.execute('''
       CREATE TABLE IF NOT EXISTS recipes (
@@ -267,6 +455,7 @@ class AppDb {
         minutes INTEGER NOT NULL DEFAULT 30,
         servings INTEGER NOT NULL DEFAULT 2,
         image_path TEXT,
+        tips TEXT,
         tags_text TEXT NOT NULL DEFAULT '',
         cook_count INTEGER NOT NULL DEFAULT 0,
         last_cooked_at INTEGER,
@@ -306,6 +495,16 @@ class AppDb {
         checked INTEGER NOT NULL DEFAULT 0,
         sort_group INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS ingredient_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        grp TEXT NOT NULL DEFAULT '',
+        unit TEXT NOT NULL DEFAULT '',
+        builtin INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        updated_at INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ing_rule_name ON ingredient_rules(name);
       CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -313,6 +512,8 @@ class AppDb {
       CREATE INDEX IF NOT EXISTS idx_ing_recipe ON ingredients(recipe_id);
     ''');
     _ensureColumn('steps', 'image_path', 'TEXT');
+    _ensureColumn('recipes', 'tips', 'TEXT');
+    syncBuiltinIngredientRules();
     _db.execute('''
       CREATE INDEX IF NOT EXISTS idx_step_recipe ON steps(recipe_id);
       CREATE INDEX IF NOT EXISTS idx_log_recipe ON cook_logs(recipe_id);
@@ -471,20 +672,20 @@ class AppDb {
     try {
       if (d.id == null) {
         _db.execute(
-          'INSERT INTO recipes (name, search_key, description, cuisine, taste, difficulty, minutes, servings, image_path, tags_text, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+          'INSERT INTO recipes (name, search_key, description, cuisine, taste, difficulty, minutes, servings, image_path, tips, tags_text, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
           [
             d.name, searchKeyOfName, d.description, d.cuisine, d.taste, d.difficulty,
-            d.minutes, d.servings, d.imagePath, d.tags.join(','), now, now,
+            d.minutes, d.servings, d.imagePath, d.tips, d.tags.join(','), now, now,
           ],
         );
         id = _db.lastInsertRowId;
       } else {
         id = d.id!;
         _db.execute(
-          'UPDATE recipes SET name=?, search_key=?, description=?, cuisine=?, taste=?, difficulty=?, minutes=?, servings=?, image_path=?, tags_text=?, updated_at=? WHERE id=?',
+          'UPDATE recipes SET name=?, search_key=?, description=?, cuisine=?, taste=?, difficulty=?, minutes=?, servings=?, image_path=?, tips=?, tags_text=?, updated_at=? WHERE id=?',
           [
             d.name, searchKeyOfName, d.description, d.cuisine, d.taste, d.difficulty,
-            d.minutes, d.servings, d.imagePath, d.tags.join(','), now, id,
+            d.minutes, d.servings, d.imagePath, d.tips, d.tags.join(','), now, id,
           ],
         );
         _db.execute('DELETE FROM ingredients WHERE recipe_id = ?', [id]);
