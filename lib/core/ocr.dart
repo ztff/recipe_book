@@ -55,6 +55,9 @@ class OcrLine {
     required this.bottom,
     required this.left,
     required this.right,
+    this.score,
+    this.tile = -1,
+    this.alt,
   });
 
   final String text;
@@ -62,6 +65,15 @@ class OcrLine {
   final double bottom;
   final double left;
   final double right;
+
+  /// 识别置信度，只有原生返回时才有。
+  final double? score;
+
+  /// 出自第几片，-1 表示未知。
+  final int tile;
+
+  /// 短框两次识别时落选那次的「文本=分数」，只用于排查。
+  final String? alt;
 
   double get height => bottom - top;
 }
@@ -73,12 +85,16 @@ class OcrLayout {
     required this.width,
     required this.height,
     this.downscaled = false,
+    this.droppedLines = const [],
   });
 
   final List<OcrLine> lines;
   final int width;
   final int height;
   final bool downscaled;
+
+  /// 检测到但被置信度过滤掉的行，只用于排查，不参与解析。
+  final List<OcrLine> droppedLines;
 
   String get plainText => lines.map((e) => e.text).join('\n');
   bool get isEmpty => lines.isEmpty;
@@ -138,6 +154,9 @@ Future<OcrLayout?> recognizeLayoutNative(
         top: (item['top'] as num).toDouble(),
         right: (item['right'] as num).toDouble(),
         bottom: (item['bottom'] as num).toDouble(),
+        score: (item['score'] as num?)?.toDouble(),
+        tile: (item['tile'] as num?)?.toInt() ?? -1,
+        alt: item['alt'] as String?,
       ));
     }
     if (lines.isEmpty) return null;
@@ -147,10 +166,26 @@ Future<OcrLayout?> recognizeLayoutNative(
         height.toString() +
         ' lines: ' +
         lines.length.toString());
+    final dropped = <OcrLine>[];
+    for (final item in (raw['droppedLines'] as List?) ?? const []) {
+      if (item is! Map) continue;
+      final text = (item['text'] as String?)?.trim() ?? '';
+      if (text.isEmpty) continue;
+      dropped.add(OcrLine(
+        text: text,
+        left: (item['left'] as num).toDouble(),
+        top: (item['top'] as num).toDouble(),
+        right: (item['right'] as num).toDouble(),
+        bottom: (item['bottom'] as num).toDouble(),
+        score: (item['score'] as num?)?.toDouble(),
+        tile: (item['tile'] as num?)?.toInt() ?? -1,
+      ));
+    }
     return OcrLayout(
       lines: _tidy(lines),
       width: width > 0 ? width : 1,
       height: height > 0 ? height : 1,
+      droppedLines: dropped,
     );
   } catch (e) {
     debugPrint('ocr native failed: ' + e.toString());
@@ -188,24 +223,30 @@ Future<Uint8List> _encodePng(ui.Image img) async {
   return data!.buffer.asUint8List();
 }
 
-Future<Uint8List> _cropToPng(ui.Image src, int top, int height) async {
+Future<Uint8List> _cropToPng(
+  ui.Image src,
+  int left,
+  int top,
+  int width,
+  int height,
+) async {
   final recorder = ui.PictureRecorder();
   final canvas = ui.Canvas(recorder);
   final srcRect = ui.Rect.fromLTWH(
-    0,
+    left.toDouble(),
     top.toDouble(),
-    src.width.toDouble(),
+    width.toDouble(),
     height.toDouble(),
   );
   final dstRect = ui.Rect.fromLTWH(
     0,
     0,
-    src.width.toDouble(),
+    width.toDouble(),
     height.toDouble(),
   );
   canvas.drawImageRect(src, srcRect, dstRect, ui.Paint());
   final picture = recorder.endRecording();
-  final cropped = await picture.toImage(src.width, height);
+  final cropped = await picture.toImage(width, height);
   try {
     return await _encodePng(cropped);
   } finally {
@@ -214,14 +255,14 @@ Future<Uint8List> _cropToPng(ui.Image src, int top, int height) async {
   }
 }
 
-/// 把原图上的一段纵向区域裁出来存成图片文件。
+/// 把原图上的一块矩形区域裁出来存成图片文件。
 ///
-/// [top] / [bottom] 用的是原图像素坐标（和 [recognizeLayout] 返回的坐标一致）。
-/// 原图高度超过 8192 时 Flutter 解码会等比缩小，这里按 [sourceHeight] 换算回去。
+/// [region] 用的是原图像素坐标（和 [recognizeLayout] 返回的坐标一致）。
+/// 原图任一边超过 8192 时 Flutter 解码会等比缩小，宽高都用同一个比例换算
+/// —— 只按高度算会把横向裁偏。
 Future<bool> cropRegionToFile(
   File source,
-  double top,
-  double bottom,
+  ui.Rect region,
   String destPath, {
   int? sourceHeight,
 }) async {
@@ -233,10 +274,12 @@ Future<bool> cropRegionToFile(
     final scale = (sourceHeight != null && sourceHeight > 0)
         ? img.height / sourceHeight
         : 1.0;
-    final t = (top * scale).round().clamp(0, img.height - 1);
-    final b = (bottom * scale).round().clamp(t + 1, img.height);
-    if (b - t < 40) return false;
-    final png = await _cropToPng(img, t, b - t);
+    final l = (region.left * scale).round().clamp(0, img.width - 1);
+    final t = (region.top * scale).round().clamp(0, img.height - 1);
+    final r = (region.right * scale).round().clamp(l + 1, img.width);
+    final b = (region.bottom * scale).round().clamp(t + 1, img.height);
+    if (b - t < 40 || r - l < 40) return false;
+    final png = await _cropToPng(img, l, t, r - l, b - t);
     await File(destPath).writeAsBytes(png, flush: true);
     return true;
   } catch (e) {

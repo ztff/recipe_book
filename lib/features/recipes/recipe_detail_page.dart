@@ -6,7 +6,7 @@ import '../../core/constants.dart';
 import '../../core/paths.dart';
 import '../../widgets/photo_viewer.dart';
 import '../../core/pick_image.dart';
-import '../../core/units.dart';
+import '../../core/servings_scale.dart';
 import '../../data/db.dart';
 import '../../main.dart';
 import '../cook/cook_mode_page.dart';
@@ -24,6 +24,13 @@ class RecipeDetailPage extends StatefulWidget {
 class _RecipeDetailPageState extends State<RecipeDetailPage> {
   RecipeDetail? _detail;
 
+  /// 份量缩放。null 表示按菜谱原始份量显示；退出页面就丢，
+  /// 数据库里的配方永远不动。
+  int? _servingsOverride;
+
+  int get _shownServings =>
+      _servingsOverride ?? _detail?.recipe.servings ?? 2;
+
   @override
   void initState() {
     super.initState();
@@ -31,7 +38,19 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   }
 
   void _reload() {
-    setState(() => _detail = appDb.detail(widget.recipeId));
+    setState(() {
+      _detail = appDb.detail(widget.recipeId);
+      _servingsOverride = null;
+    });
+  }
+
+  void _bumpServings(int delta) {
+    final base = _detail?.recipe.servings ?? 2;
+    final next = (_shownServings + delta).clamp(kMinServings, kMaxServings);
+    setState(() {
+      // 转回原始份量就清掉覆盖值，避免显示「2 人份」却是被换算过的状态
+      _servingsOverride = next == base ? null : next;
+    });
   }
 
   Future<void> _edit() async {
@@ -54,15 +73,20 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       ),
     );
     if (ok == true) {
-      appDb.deleteRecipe(widget.recipeId);
+      final imgs = appDb.deleteRecipe(widget.recipeId);
+      for (final n in imgs) {
+        await deleteImageQuietly(n);
+      }
       if (mounted) Navigator.of(context).pop();
     }
   }
 
   Future<void> _pickImage({bool camera = false}) async {
+    final old = _detail?.recipe.imagePath;
     final name = await pickAndStoreImage(fromCamera: camera);
     if (name == null) return;
     appDb.setImagePath(widget.recipeId, name);
+    if (old != null && old != name) await deleteImageQuietly(old);
     if (mounted) _reload();
   }
 
@@ -94,10 +118,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               ListTile(
                 leading: const Icon(Icons.delete_outline),
                 title: const Text('移除图片'),
-                onTap: () {
+                onTap: () async {
+                  final old = _detail?.recipe.imagePath;
                   Navigator.pop(c);
                   appDb.setImagePath(widget.recipeId, null);
-                  _reload();
+                  await deleteImageQuietly(old);
+                  if (mounted) _reload();
                 },
               ),
           ],
@@ -175,7 +201,9 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                     _Meta(icon: Icons.local_fire_department_outlined, text: r.taste),
                     _Meta(icon: Icons.schedule, text: r.minutes.toString() + ' 分钟'),
                     _Meta(icon: Icons.trending_up, text: difficultyLabel(r.difficulty)),
-                    _Meta(icon: Icons.people_outline, text: r.servings.toString() + ' 人份'),
+                    _Meta(
+                        icon: Icons.people_outline,
+                        text: _shownServings.toString() + ' 人份'),
                     if (r.cookCount > 0)
                       _Meta(icon: Icons.repeat, text: '做过 ' + r.cookCount.toString() + ' 次'),
                   ],
@@ -191,7 +219,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   ),
                 ],
                 const SizedBox(height: 20),
-                _sectionTitle(context, '食材', icon: Icons.egg_alt_outlined),
+                _sectionTitle(
+                  context,
+                  '食材',
+                  icon: Icons.egg_alt_outlined,
+                  trailing: _servingsStepper(context, d),
+                ),
                 const SizedBox(height: 8),
                 ..._ingredientGroups(context, d),
                 const SizedBox(height: 20),
@@ -245,7 +278,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     );
   }
 
-  Widget _sectionTitle(BuildContext context, String text, {IconData? icon}) {
+  Widget _sectionTitle(BuildContext context, String text,
+      {IconData? icon, Widget? trailing}) {
     return Row(
       children: [
         if (icon != null) ...[
@@ -253,6 +287,55 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           const SizedBox(width: 6),
         ],
         Text(text, style: Theme.of(context).textTheme.titleMedium),
+        if (trailing != null) ...[const Spacer(), trailing],
+      ],
+    );
+  }
+
+  /// 食材标题右侧的份量调节。减到原始份量时把覆盖值清掉。
+  Widget _servingsStepper(BuildContext context, RecipeDetail d) {
+    final scheme = Theme.of(context).colorScheme;
+    final base = d.recipe.servings;
+    final cur = _shownServings;
+    final changed = cur != base;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+          padding: EdgeInsets.zero,
+          iconSize: 18,
+          onPressed: cur > kMinServings ? () => _bumpServings(-1) : null,
+          icon: const Icon(Icons.remove_circle_outline),
+          tooltip: '减少份量',
+        ),
+        Text(
+          cur.toString() + ' 人份',
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: changed ? scheme.primary : scheme.onSurfaceVariant,
+                fontWeight: changed ? FontWeight.w600 : null,
+              ),
+        ),
+        if (changed)
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 34),
+            padding: EdgeInsets.zero,
+            iconSize: 16,
+            onPressed: () => setState(() => _servingsOverride = null),
+            icon: const Icon(Icons.restart_alt),
+            tooltip: '回到原始份量',
+          ),
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+          padding: EdgeInsets.zero,
+          iconSize: 18,
+          onPressed: cur < kMaxServings ? () => _bumpServings(1) : null,
+          icon: const Icon(Icons.add_circle_outline),
+          tooltip: '增加份量',
+        ),
       ],
     );
   }
@@ -276,12 +359,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             children: [
               Expanded(child: Text(i.name)),
               Text(
-                kVagueUnits.contains(i.unit)
-                    ? (i.unit ?? '')
-                    : (i.qty == null && (i.unit == null || i.unit!.isEmpty)
-                        ? ''
-                        : (formatQty(i.qty) +
-                            (i.unit == null || i.unit!.isEmpty ? '' : ' ' + i.unit!))),
+                scaledQtyText(
+                    i.qty, i.unit, d.recipe.servings, _shownServings),
                 style: Theme.of(context)
                     .textTheme
                     .bodyMedium

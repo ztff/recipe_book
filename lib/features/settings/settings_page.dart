@@ -7,10 +7,14 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+
 import '../../core/app_settings.dart';
+import '../../core/backup.dart';
 import '../../core/paths.dart';
 import '../../core/theme.dart';
+import '../../core/update_checker.dart';
 import '../../data/backup.dart';
+import '../../data/ocr_raw_store.dart';
 import '../../data/seed.dart';
 import '../../main.dart';
 import 'ingredient_rules_page.dart';
@@ -26,11 +30,20 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _busy = false;
   bool _needsRestart = false;
   String _version = '';
+  int _ocrRawCount = 0;
 
   @override
   void initState() {
     super.initState();
     _loadVersion();
+    _refreshBackup();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 扫目录很便宜，但没必要每次 build 都扫
+    _ocrRawCount = OcrRawStore.count;
   }
 
   Future<void> _loadVersion() async {
@@ -78,6 +91,108 @@ class _SettingsPageState extends State<SettingsPage> {
         content: Text('改了 ' + ings.toString() + ' 条用料、' + steps.toString() + ' 个步骤'),
       ),
     );
+  }
+
+  bool _backupBusy = false;
+String? _lastBackup;
+List<BackupItem> _backupFiles = const [];
+
+String _backupSubtitle() {
+  if (_backupBusy) return '正在打包…';
+  final t = BackupService.lastAt(_lastBackup);
+  final when = t == null
+      ? '还没备份过'
+      : '上次 ' + _fmtTime(t) + '，每 ' + BackupService.intervalDays.toString() + ' 天自动一次';
+  if (_backupFiles.isEmpty) {
+    return when + '\n下载/recipe_book_backup 里暂无文件';
+  }
+  final total = _backupFiles.fold<int>(0, (a, b) => a + b.size);
+  final keep = '下载/recipe_book_backup 有 ' +
+      _backupFiles.length.toString() +
+      ' 份，共 ' +
+      _fmtSize(total) +
+      '（不限份数）';
+  return when + '\n' + keep;
+}
+
+String _fmtTime(DateTime t) {
+  String two(int v) => v.toString().padLeft(2, '0');
+  return t.year.toString() + '-' + two(t.month) + '-' + two(t.day) +
+      ' ' + two(t.hour) + ':' + two(t.minute);
+}
+
+Future<void> _refreshBackup() async {
+  final last = appDb.getSetting(BackupService.settingKey);
+  final files = await BackupService.list();
+  if (!mounted) return;
+  setState(() {
+    _lastBackup = last;
+    _backupFiles = files;
+  });
+}
+
+Future<void> _backupNow() async {
+  setState(() => _backupBusy = true);
+  final r = await BackupService.run(
+    snapshot: (path) => appDb.snapshotTo(path),
+    onlyImages: appDb.referencedImages(),
+  );
+  if (!mounted) return;
+  setState(() => _backupBusy = false);
+  if (r.ok) {
+    appDb.setSetting(
+      BackupService.settingKey,
+      DateTime.now().toIso8601String(),
+    );
+    await _refreshBackup();
+    if (!mounted) return;
+    _snack('已备份到 ' + (r.where ?? '') + '（' + _fmtSize(r.bytes) + '）');
+  } else {
+    _snack('备份失败：' + (r.error ?? '未知原因'));
+  }
+}
+
+String _fmtSize(int b) {
+  if (b < 1024) return b.toString() + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toStringAsFixed(0) + ' KB';
+  return (b / 1024 / 1024).toStringAsFixed(1) + ' MB';
+}
+
+Future<void> _exportOcrRaw() async {
+    final latest = OcrRawStore.latest();
+    if (latest == null) {
+      _snack('还没有识别记录，先去导入一张截图');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final bytes = await latest.readAsBytes();
+      final name = p.basename(latest.path);
+      final uri = await FilePicker.saveFile(
+        dialogTitle: '保存识别记录',
+        fileName: name,
+        bytes: bytes,
+        mimeType: 'application/json',
+      );
+      if (!mounted) return;
+      setState(() => _ocrRawCount = OcrRawStore.count);
+      _snack(uri == null ? '已取消保存' : '识别记录已保存，发给开发者就能定位问题');
+    } catch (e) {
+      if (mounted) _snack('导出失败：' + e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 应用自己不发网络请求：只是把发布页交给系统浏览器。
+  Future<void> _openRelease() async {
+    final ok = await openReleasePage();
+    if (!mounted) return;
+    if (ok) {
+      _snack('已打开更新页面，看看有没有新版本');
+    } else {
+      _snack('打不开浏览器，手动访问 ' + kReleasePage);
+    }
   }
 
   Future<void> _export() async {
@@ -142,7 +257,7 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('重置为示例菜谱？'),
-        content: const Text('会删掉现有全部菜谱、记录和采购清单。'),
+        content: const Text('会删掉现有全部菜谱、记录、采购清单和图片文件。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
           FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('重置')),
@@ -152,6 +267,13 @@ class _SettingsPageState extends State<SettingsPage> {
     if (ok != true) return;
     setState(() => _busy = true);
     await reseed(appDb);
+    if (await appImageDir.exists()) {
+      for (final f in appImageDir.listSync().whereType<File>()) {
+        try {
+          await f.delete();
+        } catch (_) {}
+      }
+    }
     if (mounted) {
       setState(() => _busy = false);
       _snack('已恢复示例数据');
@@ -224,7 +346,9 @@ class _SettingsPageState extends State<SettingsPage> {
       recipeCount = recipes.length;
       cookCount = recipes.fold<int>(0, (s, r) => s + r.cookCount);
     } catch (_) {}
-    final images = appImageDir.existsSync() ? appImageDir.listSync().length : 0;
+    // 按数据库引用数算，不是目录文件数：备份里只打被引用的，
+    // 两个数字要能对得上，不然看到「图片 30」而备份只有 28 会把人搞糊涂。
+    final images = appDb.referencedImages().length;
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
       body: ListView(
@@ -281,6 +405,15 @@ class _SettingsPageState extends State<SettingsPage> {
                   subtitle: const Text('按当前规则重排已有用料的分组和单位'),
                   onTap: _reapplyRules,
                 ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.description_outlined),
+                  title: const Text('导出识别记录'),
+                  subtitle: Text(_ocrRawCount == 0
+                      ? '还没识别过；识别一次后会留档，出问题可导出排查'
+                      : '最近 ' + _ocrRawCount.toString() + ' 次识别的原始行'),
+                  onTap: _busy ? null : _exportOcrRaw,
+                ),
               ],
             ),
           ),
@@ -292,9 +425,17 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Column(
               children: [
                 ListTile(
+                  leading: const Icon(Icons.history),
+                  title: const Text('备份到 Download'),
+                  subtitle: Text(_backupSubtitle()),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _busy || _backupBusy ? null : _backupNow,
+                ),
+                const Divider(height: 1),
+                ListTile(
                   leading: const Icon(Icons.upload_file_outlined),
                   title: const Text('导出整库备份'),
-                  subtitle: const Text('数据库 + 全部图片打包成 zip'),
+                  subtitle: const Text('自己选保存位置'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _busy ? null : _export,
                 ),
@@ -473,9 +614,25 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(_version.isEmpty ? '我的食谱' : '我的食谱 v' + _version),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(_version.isEmpty
+                            ? '我的食谱'
+                            : '我的食谱 v' + _version),
+                      ),
+                      TextButton(
+                        onPressed: _busy ? null : _openRelease,
+                        child: const Text('获取更新'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text('完全离线：不联网、无账号、无上传。所有菜谱、照片与记录都只保存在这台设备上。'
+                      '「获取更新」只是交给浏览器打开发布页，应用自己不联网。',
+                      style: TextStyle(color: scheme.onSurfaceVariant, height: 1.45)),
                   const SizedBox(height: 6),
-                  Text('完全离线：不联网、无账号、无上传。所有菜谱、照片与记录都只保存在这台设备上。',
+                  Text('本项目代码由 AI 辅助编写，以 MIT 协议开源。',
                       style: TextStyle(color: scheme.onSurfaceVariant, height: 1.45)),
                   const SizedBox(height: 10),
                   Text('数据库：' + (appDb.dbFilePath ?? '内存库'),

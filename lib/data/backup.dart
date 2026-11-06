@@ -7,6 +7,9 @@ import '../core/paths.dart';
 import 'db.dart';
 
 /// 打包数据库 + 图片成一个 zip，返回目标路径。
+///
+/// 只打数据库里真正引用到的图片，和自动备份保持一致；目录里删菜谱留下的
+/// 孤儿文件不再混进去。
 Future<String> exportBackup(AppDb db, String destPath) async {
   final encoder = ZipFileEncoder();
   encoder.create(destPath);
@@ -15,9 +18,12 @@ Future<String> exportBackup(AppDb db, String destPath) async {
     final f = File(dbPath);
     if (await f.exists()) await encoder.addFile(f, 'recipe_book.sqlite');
   }
+  final used = db.referencedImages();
   if (await appImageDir.exists()) {
     for (final f in appImageDir.listSync().whereType<File>()) {
-      await encoder.addFile(f, 'images/' + p.basename(f.path));
+      final base = p.basename(f.path);
+      if (!used.contains(base)) continue;
+      await encoder.addFile(f, 'images/' + base);
     }
   }
   await encoder.close();

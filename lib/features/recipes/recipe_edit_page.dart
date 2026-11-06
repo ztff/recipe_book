@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -6,24 +7,37 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/constants.dart';
+import '../../core/image_tool.dart';
 import '../../core/ocr.dart';
+import '../../core/ocr_progress.dart';
+import 'step_crop_page.dart';
+import 'step_crop_review_page.dart';
 import '../../core/paths.dart';
 import '../../core/pick_image.dart';
 import '../../core/pinyin.dart';
 import '../../core/ingredient_rules.dart';
 import '../../core/screenshot_parser.dart';
 import '../../data/db.dart';
+import '../../data/ocr_raw_store.dart';
 import '../../main.dart';
 
 class _IngEdit {
-  _IngEdit({String name = '', String qty = '', this.grp = '主料', this.unit = '克'})
-      : nameCtrl = TextEditingController(text: name),
+  _IngEdit({
+    String name = '',
+    String qty = '',
+    this.grp = '主料',
+    this.unit = '克',
+    this.low = false,
+  })  : nameCtrl = TextEditingController(text: name),
         qtyCtrl = TextEditingController(text: qty);
 
   final TextEditingController nameCtrl;
   final TextEditingController qtyCtrl;
   String grp;
   String unit;
+
+  /// 识别置信度偏低，卡片上会标出来提醒核对。
+  bool low;
 
   void dispose() {
     nameCtrl.dispose();
@@ -32,12 +46,13 @@ class _IngEdit {
 }
 
 class _StepEdit {
-  _StepEdit({String text = '', this.timerSeconds, this.imagePath})
+  _StepEdit({String text = '', this.timerSeconds, this.imagePath, this.low = false})
       : textCtrl = TextEditingController(text: text);
 
   final TextEditingController textCtrl;
   int? timerSeconds;
   String? imagePath;
+  bool low;
 
   void dispose() => textCtrl.dispose();
 }
@@ -76,6 +91,9 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
   bool _loading = true;
   bool _ocrBusy = false;
   String _ocrStatus = '';
+
+  /// 识别计时，用来估算剩余时间。只统计本次识别的分片速度。
+  Stopwatch? _ocrWatch;
 
   bool get _isNew => widget.recipeId == null;
 
@@ -161,7 +179,98 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
   Future<void> _pickImage() async {
     final name = await pickAndStoreImage();
     if (name == null) return;
-    setState(() => _imagePath = name);
+    final file = File(imageFullPath(name));
+
+    // 裁剪页要知道原图尺寸才能算显示比例
+    double w = 0;
+    double h = 0;
+    ui.Codec? codec;
+    ui.Image? img;
+    try {
+      codec = await ui.instantiateImageCodec(await file.readAsBytes());
+      img = (await codec.getNextFrame()).image;
+      w = img.width.toDouble();
+      h = img.height.toDouble();
+    } catch (e) {
+      // 解不出来就直接用原图当封面，别让用户白选一次
+      debugPrint('cover decode failed: ' + e.toString());
+      if (mounted) setState(() => _imagePath = name);
+      return;
+    } finally {
+      img?.dispose();
+      try {
+        codec?.dispose();
+      } catch (_) {}
+    }
+    if (!mounted) return;
+
+    final r = await Navigator.of(context).push<Rect?>(
+      MaterialPageRoute(
+        builder: (_) => StepCropPage(
+          source: file,
+          imageWidth: w,
+          imageHeight: h,
+          initial: null,
+          stepIndex: 0,
+          stepText: '',
+          title: '封面图',
+        ),
+      ),
+    );
+    if (!mounted) return;
+
+    // 返回键退出：什么都没决定，原图留着当封面
+    if (r == null) {
+      setState(() => _imagePath = name);
+      return;
+    }
+    // 明确点了「不要这张」：这次不设封面
+    if (r == Rect.zero) {
+      _discardImage(name);
+      setState(() => _imagePath = null);
+      return;
+    }
+    final cropped = await _cropCover(file, r, h.round());
+    if (!mounted) return;
+    if (cropped == null) {
+      // 裁失败就用原图，别把用户选的图弄丢
+      setState(() => _imagePath = name);
+      return;
+    }
+    _discardImage(name);
+    setState(() => _imagePath = cropped);
+  }
+
+  void _discardImage(String name) {
+    try {
+      File(imageFullPath(name)).deleteSync();
+    } catch (_) {}
+  }
+
+  /// 按框裁一张封面。流程和步骤图一样：先出 PNG，再让原生转 JPEG。
+  Future<String?> _cropCover(File src, Rect rect, int sourceHeight) async {
+    final name =
+        'cover_' + DateTime.now().millisecondsSinceEpoch.toString() + '.jpg';
+    final finalPath = imageFullPath(name);
+    final tmp = finalPath + '.tmp.png';
+    final ok = await cropRegionToFile(
+      src,
+      rect,
+      tmp,
+      sourceHeight: sourceHeight,
+    );
+    if (!ok) return null;
+    final n = await shrinkToJpeg(tmp, finalPath);
+    if (n == null) {
+      try {
+        File(tmp).renameSync(finalPath);
+      } catch (_) {}
+      return name;
+    }
+    try {
+      File(tmp).deleteSync();
+    } catch (_) {}
+    return name;
   }
 
   Future<void> _showRawText(String text, {bool downscaled = false}) async {
@@ -224,6 +333,13 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     return File(res.first.path!);
   }
 
+  /// 原生每识别完一片回报一次。
+  void _onOcrProgress(int done, int total) {
+    if (!mounted) return;
+    final ms = _ocrWatch?.elapsedMilliseconds ?? 0;
+    setState(() => _ocrStatus = ocrProgressText(done, total, ms));
+  }
+
   Future<void> _importFromImage() async {
     setState(() {
       _ocrBusy = true;
@@ -237,15 +353,14 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       }
       if (mounted) setState(() => _ocrStatus = '正在读取图片…');
 
+      // 计时从真正开始识别算起。放到选图之前的话，用户在相册里停留的
+      // 几十秒会被算进「每片耗时」，剩余时间能估出四五十秒。
+      _ocrWatch = Stopwatch()..start();
       final layout = await recognizeLayout(
         file,
-        onProgress: (done, total) {
-          if (!mounted) return;
-          final pct =
-              total <= 0 ? 0 : ((done / total) * 100).clamp(0, 100).round();
-          setState(() => _ocrStatus = '正在识别 ' + pct.toString() + '%');
-        },
+        onProgress: (done, total) => _onOcrProgress(done, total),
       );
+      _ocrWatch?.stop();
       if (layout == null) {
         if (!mounted) return;
         setState(() {
@@ -259,6 +374,8 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       // 用数据库里的规则，设置里改过的分组和单位立刻生效。
       final parsed = parseScreenRecipe(layout, rules: appDb.ingredientRuleSet());
       if (parsed.isEmpty) {
+        // 解析失败时最需要留档
+        await OcrRawStore.save(layout, sourceImage: file.path);
         if (!mounted) return;
         setState(() {
           _ocrBusy = false;
@@ -273,10 +390,21 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       final stored = await pickAndStoreImage(prePicked: file, preserveSize: true);
       final src = stored == null ? file : File(imageFullPath(stored));
 
-      if (mounted) setState(() => _ocrStatus = '正在裁步骤图');
+      // 原始行留档，出问题时能在设置里导出来看
+      await OcrRawStore.save(
+        layout,
+        sourceImage: file.path,
+        recipeName: parsed.name,
+      );
+
+      if (mounted) {
+        setState(() => _ocrStatus = '识别完了，正在裁步骤图');
+      }
+      final rects = <Rect?>[];
       final crops = <String?>[];
       for (var i = 0; i < parsed.steps.length; i++) {
         final rect = parsed.steps[i].imageRect;
+        rects.add(rect);
         crops.add(rect == null
             ? null
             : await _saveStepCrop(src, rect, i, layout.height));
@@ -287,6 +415,43 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
         _ocrBusy = false;
         _ocrStatus = '';
       });
+
+      // 自动框只是「这一步区域里最大的空白块」，经常框歪。截完先让用户
+      // 过一眼，不满意的当场拖四条边重截。
+      // 封面先按自动检测的成品图位置裁一张，用户在检查页里还能调
+      final coverBox = <String?>[
+        parsed.coverRect == null
+            ? null
+            : await _saveStepCrop(src, parsed.coverRect!, -1, layout.height),
+      ];
+      if (!mounted) return;
+      if (crops.any((c) => c != null) || coverBox[0] != null) {
+        final reviewed = await Navigator.of(context).push<List<String?>>(
+          MaterialPageRoute(
+            builder: (_) => StepCropReviewPage(
+              source: src,
+              imageWidth: layout.width.toDouble(),
+              imageHeight: layout.height.toDouble(),
+              texts: parsed.steps.map((s) => s.text).toList(),
+              rects: rects,
+              crops: crops,
+              coverBox: coverBox,
+              coverRect: parsed.coverRect,
+              onCoverChanged: (name) {
+                if (mounted) setState(() => _imagePath = name);
+              },
+              onRecrop: (rect, index) =>
+                  _saveStepCrop(src, rect, index, layout.height),
+            ),
+          ),
+        );
+        if (!mounted) return;
+        if (reviewed != null) {
+          for (var i = 0; i < crops.length && i < reviewed.length; i++) {
+            crops[i] = reviewed[i];
+          }
+        }
+      }
 
       // 直接覆盖表单，不再弹确认框；同时留一份快照给「撤销」。
       final snapshot = _snapshotForm();
@@ -311,6 +476,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
             qty: i.qty == null ? '' : _trimNum(i.qty!),
             grp: i.group.isEmpty ? '主料' : i.group,
             unit: i.unit ?? (i.qty == null ? '' : '克'),
+            low: i.low,
           ));
         }
         for (final s in _steps) {
@@ -321,11 +487,13 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
           _steps.add(_StepEdit(
             text: parsed.steps[i].text,
             imagePath: i < crops.length ? crops[i] : null,
+            low: parsed.steps[i].low,
           ));
         }
         if (_ings.isEmpty) _ings.add(_IngEdit());
         if (_steps.isEmpty) _steps.add(_StepEdit());
-        if (stored != null) _imagePath = stored;
+        // 检查配图页可能已经选好封面了，别拿源图盖掉它
+        if (stored != null && _imagePath == null) _imagePath = stored;
       });
       _snack(
         '已识别 ' +
@@ -350,8 +518,8 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
   List<Object?> _snapshotForm() => [
         _nameCtrl.text,
         _descCtrl.text,
-        [for (final i in _ings) [i.nameCtrl.text, i.qtyCtrl.text, i.unit, i.grp]],
-        [for (final s in _steps) [s.textCtrl.text, s.timerSeconds, s.imagePath]],
+        [for (final i in _ings) [i.nameCtrl.text, i.qtyCtrl.text, i.unit, i.grp, i.low]],
+        [for (final s in _steps) [s.textCtrl.text, s.timerSeconds, s.imagePath, s.low]],
         _imagePath,
         _tipsCtrl.text,
       ];
@@ -373,6 +541,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
           qty: v[1] as String,
           grp: v[3] as String,
           unit: v[2] as String,
+          low: v.length > 4 && v[4] == true,
         ));
       }
       final steps = snap[3] as List;
@@ -382,7 +551,12 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       _steps.clear();
       for (final raw in steps) {
         final v = raw as List;
-        _steps.add(_StepEdit(text: v[0] as String, timerSeconds: v[1] as int?, imagePath: v[2] as String?));
+        _steps.add(_StepEdit(
+          text: v[0] as String,
+          timerSeconds: v[1] as int?,
+          imagePath: v[2] as String?,
+          low: v.length > 3 && v[3] == true,
+        ));
       }
       _imagePath = snap[4] as String?;
       _tipsCtrl.text = snap[5] as String;
@@ -398,19 +572,35 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     int index,
     int sourceHeight,
   ) async {
-    final name = 'step_' +
+    final prefix = index < 0 ? 'cover_' : 'step_';
+    final name = prefix +
         DateTime.now().millisecondsSinceEpoch.toString() +
         '_' +
         index.toString() +
         '.jpg';
+    final finalPath = imageFullPath(name);
+    // cropRegionToFile 只能写 PNG（Flutter 的 toByteData 只支持 PNG），
+    // 先落临时文件再让原生转成 JPEG。步骤图是照片，PNG 一张要 1 MB 多。
+    final tmp = finalPath + '.tmp.png';
     final ok = await cropRegionToFile(
       source,
-      rect.top,
-      rect.bottom,
-      imageFullPath(name),
+      rect,
+      tmp,
       sourceHeight: sourceHeight,
     );
-    return ok ? name : null;
+    if (!ok) return null;
+    final n = await shrinkToJpeg(tmp, finalPath);
+    if (n == null) {
+      // 转码失败就把 PNG 留下，图不能丢
+      try {
+        File(tmp).renameSync(finalPath);
+      } catch (_) {}
+      return name;
+    }
+    try {
+      File(tmp).deleteSync();
+    } catch (_) {}
+    return name;
   }
 
   void _addTag() {
@@ -420,7 +610,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     _tagCtrl.clear();
   }
 
-  void _save() {
+  Future<void> _save() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty) {
       _snack('先给这道菜起个名字');
@@ -469,7 +659,26 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       ingredients: ings,
       steps: steps,
     );
+    // 保存前记下旧的图片，保存后再删。编辑时换封面/换步骤图会留下旧文件，
+    // 但中途放弃编辑时不能删，所以只能等到这里。
+    final before = <String>{};
+    if (widget.recipeId != null) {
+      final d = appDb.detail(widget.recipeId!);
+      if (d != null) {
+        if (d.recipe.imagePath != null) before.add(d.recipe.imagePath!);
+        for (final s in d.steps) {
+          if (s.imagePath != null) before.add(s.imagePath!);
+        }
+      }
+    }
     final savedId = appDb.saveRecipe(draft, searchKey(name));
+    if (before.isNotEmpty) {
+      final after = appDb.referencedImages();
+      for (final n in before) {
+        if (!after.contains(n)) await deleteImageQuietly(n);
+      }
+    }
+    if (!mounted) return;
     Navigator.of(context).pop(savedId);
   }
 
@@ -726,6 +935,19 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     );
   }
 
+  /// 识别置信度偏低时的小标，点一下收掉。
+  Widget _lowMark(VoidCallback onDismiss) => Tooltip(
+        message: '这行的字识别得没把握，核对一下',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onDismiss,
+          child: const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 2),
+            child: Icon(Icons.error_outline, size: 16, color: Color(0xFFE69138)),
+          ),
+        ),
+      );
+
   Widget _ingRow(int index) {
     final e = _ings[index];
     return Padding(
@@ -733,6 +955,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
+          if (e.low) _lowMark(() => setState(() => e.low = false)),
           GestureDetector(
             onTap: () async {
               final picked = await _askChoice(
@@ -757,7 +980,15 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
             flex: 4,
             child: TextField(
               controller: e.nameCtrl,
-              decoration: const InputDecoration(hintText: '名称'),
+              decoration: InputDecoration(
+                hintText: '名称',
+                enabledBorder: e.low
+                    ? OutlineInputBorder(
+                        borderSide: const BorderSide(color: Color(0xFFE69138)),
+                        borderRadius: BorderRadius.circular(4),
+                      )
+                    : null,
+              ),
             ),
           ),
           const SizedBox(width: 6),
@@ -832,6 +1063,10 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
                   child: Text((index + 1).toString(),
                       style: const TextStyle(fontSize: 11)),
                 ),
+                if (s.low) ...[
+                  const SizedBox(width: 6),
+                  _lowMark(() => setState(() => s.low = false)),
+                ],
                 const Spacer(),
                 IconButton(
                   onPressed: index == 0

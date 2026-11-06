@@ -14,6 +14,7 @@ class ScreenRecipe {
     this.ingredients = const [],
     this.steps = const [],
     this.tips,
+    this.coverRect,
     this.droppedLines = 0,
   });
 
@@ -23,6 +24,10 @@ class ScreenRecipe {
   final List<ScreenIngredient> ingredients;
   final List<ScreenStep> steps;
   final String? tips;
+
+  /// 成品图的位置。长截图通常把成品大图放在最上面、菜名之前，
+  /// 这里是在「顶部到第一个步骤」之间找出来的最大空白块。
+  final Rect? coverRect;
   final int droppedLines;
 
   bool get isEmpty =>
@@ -41,13 +46,23 @@ class ScreenRecipe {
 }
 
 class ScreenIngredient {
-  ScreenIngredient({required this.name, this.qty, this.unit, this.group = ''});
+  ScreenIngredient({
+    required this.name,
+    this.qty,
+    this.unit,
+    this.group = '',
+    this.low = false,
+  });
 
   /// 主料 / 辅料 / 调料。菜谱自带分组标题时用菜谱的，没有就按常识猜。
   final String group;
   final String name;
   final double? qty;
   final String? unit;
+
+  /// 来源行识别置信度偏低。短词（「一壶」这类）模型偶尔会认成别的字，
+  /// 编辑页据此标出来提醒核对。
+  final bool low;
 
   String get display {
     final q = qty == null ? '' : (qty! % 1 == 0 ? qty!.toInt().toString() : qty!.toString());
@@ -60,11 +75,26 @@ class ScreenIngredient {
 }
 
 class ScreenStep {
-  ScreenStep({required this.text, this.imageRect});
+  ScreenStep({required this.text, this.imageRect, this.low = false});
   final String text;
+
+  /// 来源行识别置信度偏低，编辑页会标出来。
+  final bool low;
 
   /// 该步骤配图在整张截图里的位置；没检测到就是 null。
   final Rect? imageRect;
+}
+
+/// 低于这个置信度就认为该行可能认错字。实测整张图正常行都是 1.0，
+/// 出问题的「壶」是 0.8，区分度足够。
+const double _lowScore = 0.9;
+
+bool _isLowScore(dynamic line) {
+  final s = line.score;
+  if (s == null || (s as double) >= _lowScore) return false;
+  // 短框跑过两次、已经按整句似然比对过，分数低是「两个字各让一点」的正常现象，
+  // 再标出来只是噪音（「一壶」就是 0.7 但结果正确）。
+  return line.alt == null;
 }
 
 /// 广告/推广行的关键词，命中就丢掉。
@@ -109,7 +139,8 @@ final RegExp _cnAmount = RegExp(
 /// PaddleOCR 经常把名称和数量拆成两行，这种行要能挂回上一条。
 /// 返回 (数量, 单位)，不是数量行返回 null。
 (double?, String?)? _qtyOnly(String text) {
-  final t = text.trim();
+  // 「—壶」这种：OCR 把「一」认成了横线
+  final t = normalizeCnDash(text.trim());
   if (t.isEmpty) return null;
 
   final bare = RegExp(r'^(\d+(?:\.\d+)?)$').firstMatch(t);
@@ -405,7 +436,9 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
 
       // 「名称」和「数量」被识别成两行时，数量行会单独出现。
       // 这一步要排在长度过滤之前，否则只认出「4」的那种行会被当成单字丢掉。
-      final q = _qtyOnly(t);
+      // OCR 偶尔把「一」认成破折号（真机上见过「—壶」），先折回来
+      final tq = normalizeCnDash(t);
+      final q = _qtyOnly(tq);
       if (q != null && ingredients.isNotEmpty) {
         final last = ingredients.last;
         // 数量和单位可能分两行下来，各自补各自缺的那半。
@@ -419,6 +452,7 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
             qty: takeQty ? q.$1 : last.qty,
             unit: takeUnit ? q.$2 : last.unit,
             group: last.group,
+            low: last.low || _isLowScore(ingLines[i]),
           ));
           continue;
         }
@@ -432,11 +466,12 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
           qty: parsed.qty,
           unit: parsed.unit,
           group: curGroup,
+          low: _isLowScore(ingLines[i]),
         ));
         continue;
       }
       // 「葱 一段」「五花肉 任意多少」「盐 按口味调料」：数量是文字不是数字
-      final cn = _cnAmount.firstMatch(t);
+      final cn = _cnAmount.firstMatch(tq);
       if (cn != null && (cn.group(1) ?? '').trim().isNotEmpty) {
         final split = _splitCnAmount(cn.group(2) ?? '');
         ingredients.add(ScreenIngredient(
@@ -444,6 +479,7 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
           qty: split.$1,
           unit: split.$2.isEmpty ? null : split.$2,
           group: curGroup,
+          low: _isLowScore(ingLines[i]),
         ));
         continue;
       }
@@ -453,14 +489,34 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
           name: (vague.group(1) ?? '').trim(),
           unit: vague.group(2),
           group: curGroup,
+          low: _isLowScore(ingLines[i]),
         ));
         continue;
       }
       if (t.length <= 20 && !_isJunkName(t)) {
-        ingredients.add(ScreenIngredient(name: t, group: curGroup));
+        ingredients.add(ScreenIngredient(
+          name: t,
+          group: curGroup,
+          low: _isLowScore(ingLines[i]),
+        ));
       }
     }
   }
+
+  // 成品图只在「顶部一整块没有文字」时才认。
+  //
+  // 不能拿「最大空白块」兜底：OCR 分不清空白和图片，长截图里用料上方
+  // 那片留白、还有夹在中间的广告图，都会被当成成品图。宁可返回 null
+  // 让用户自己框，也别给一个框到广告的错候选。
+  final firstTextTop = usable.isEmpty ? null : usable.first.top;
+  final coverRect = (firstTextTop != null && firstTextTop > 200)
+      ? Rect.fromLTRB(
+          layout.width * 0.04,
+          0,
+          layout.width * 0.96,
+          firstTextTop,
+        )
+      : null;
 
   // 步骤
   final steps = <ScreenStep>[];
@@ -471,13 +527,19 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
       nextTop ?? (tipsTop ?? layout.height.toDouble()),
       tipsTop != null && tipsTop > startY ? tipsTop : double.infinity,
     );
-    final body = usable
+    final rows = usable
         .where((e) => e.top > startY && e.top < endY)
+        .toList();
+    final body = rows
         .map((e) => e.text.trim())
-        .where((e) => e.isNotEmpty)
+        .where((e) => e.isNotEmpty && !_isPunctuationNoise(e))
         .toList();
     final rect = _findImageBlock(layout, startY, endY, body);
-    steps.add(ScreenStep(text: _joinBySentence(body), imageRect: rect));
+    steps.add(ScreenStep(
+      text: _joinBySentence(body),
+      imageRect: rect,
+      low: rows.any(_isLowScore),
+    ));
   }
 
   // 小贴士
@@ -486,7 +548,7 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
     final body = usable
         .where((e) => e.top > tipsTop!)
         .map((e) => e.text.trim())
-        .where((e) => e.isNotEmpty)
+        .where((e) => e.isNotEmpty && !_isPunctuationNoise(e))
         .toList();
     if (body.isNotEmpty) tips = _joinBySentence(body);
   }
@@ -498,9 +560,14 @@ ScreenRecipe parseScreenRecipe(OcrLayout layout, {IngredientRuleSet? rules}) {
     ingredients: [
       for (final i in ingredients) _finalizeIngredient(i, rules),
     ],
+    coverRect: coverRect,
     steps: [
       for (final s in steps)
-        ScreenStep(text: fixTypos(s.text), imageRect: s.imageRect),
+        ScreenStep(
+          text: fixTypos(s.text),
+          imageRect: s.imageRect,
+          low: s.low,
+        ),
     ],
     tips: tips == null ? null : fixTypos(tips),
     droppedLines: dropped,
@@ -537,6 +604,15 @@ double _firstAfter(
   ].where((e) => e > afterY).toList()
     ..sort();
   return candidates.isEmpty ? fallback : candidates.first;
+}
+
+/// 配图被检测成文字框时，识别结果常是一串标点（「““」这种）。
+/// 步骤和小贴士里要把这类行丢掉，否则会挤进正文。
+bool _isPunctuationNoise(String text) {
+  final t = text.trim();
+  if (t.isEmpty) return true;
+  final meaningful = RegExp(r'[一-龥A-Za-z0-9]').allMatches(t).length;
+  return meaningful == 0;
 }
 
 /// 食材名：只要不是乱码（中文占比过低）就收。
@@ -610,7 +686,9 @@ ScreenIngredient _finalizeIngredient(ScreenIngredient i, IngredientRuleSet? rule
   final blank = i.unit == null || i.unit!.trim().isEmpty;
   final String? unit;
   if (rule != null) {
-    unit = blank && rule.unit.isNotEmpty ? rule.unit : i.unit;
+    // 没有数量就不补单位：「料酒」没写量补个「汤匙」只会误导
+    final canFill = i.qty != null;
+    unit = blank && canFill && rule.unit.isNotEmpty ? rule.unit : i.unit;
   } else {
     unit = guessIngredientUnit(name, i.qty, i.unit);
   }
@@ -624,12 +702,13 @@ ScreenIngredient _finalizeIngredient(ScreenIngredient i, IngredientRuleSet? rule
   );
 }
 
-ScreenIngredient? _parseAmount(String text) {
+ScreenIngredient? _parseAmount(String source) {
+  final text = normalizeCnDash(source);
   final m = _ingredientAmount.firstMatch(text);
   if (m == null) return null;
   // 「2~3片」这种区间只取下限，和 _amountOnly 分支保持一致。
-  final raw = (m.group(2) ?? '').split(RegExp(r'[~\-—]')).first.trim();
-  final qty = double.tryParse(raw);
+  final low = (m.group(2) ?? '').split(RegExp(r'[~\-—]')).first.trim();
+  final qty = double.tryParse(low);
   if (qty == null) return null;
   final name = (m.group(1) ?? '').trim();
   if (name.isEmpty) return null;

@@ -279,6 +279,16 @@ class AppDb {
   final StreamController<void> _changes = StreamController<void>.broadcast();
   String? dbFilePath;
 
+  /// 导出一份一致的库快照到 [path]。
+  ///
+  /// 直接复制 .sqlite 在 WAL 模式下可能拿到半截事务，VACUUM INTO 会先
+  /// 整理成单文件再写，备份才靠得住。
+  void snapshotTo(String path) {
+    final f = File(path);
+    if (f.existsSync()) f.deleteSync();
+    _db.execute('VACUUM INTO ?', [path]);
+  }
+
   static Future<AppDb> open({Directory? dataDir}) async {
     final dir = dataDir ?? await resolveDataDir();
     await dir.create(recursive: true);
@@ -714,9 +724,48 @@ class AppDb {
     return id;
   }
 
-  void deleteRecipe(int id) {
+  /// 删掉菜谱，返回它引用过的图片文件名（调用方负责删文件）。
+  ///
+  /// 以前只删记录不管图片，删一道菜就在 images/ 里留下几兆的死文件，
+  /// 攒了快两百个。现在把清单交出去，由调用方删。
+  List<String> deleteRecipe(int id) {
+    final imgs = <String>[];
+    for (final r in _db.select(
+      'SELECT image_path AS p FROM recipes WHERE id = ? AND image_path IS NOT NULL',
+      [id],
+    )) {
+      final v = r['p'] as String?;
+      if (v != null && v.isNotEmpty) imgs.add(v);
+    }
+    for (final r in _db.select(
+      'SELECT image_path AS p FROM steps WHERE recipe_id = ? AND image_path IS NOT NULL',
+      [id],
+    )) {
+      final v = r['p'] as String?;
+      if (v != null && v.isNotEmpty) imgs.add(v);
+    }
     _db.execute('DELETE FROM recipes WHERE id = ?', [id]);
     _ping();
+    return imgs;
+  }
+
+  /// 图片改名后同步引用。迁移时把 .png 换成 .jpg 要用。
+  void renameImageReferences(String from, String to) {
+    _db.execute('UPDATE recipes SET image_path = ? WHERE image_path = ?', [to, from]);
+    _db.execute('UPDATE steps SET image_path = ? WHERE image_path = ?', [to, from]);
+  }
+
+  /// 所有被引用的图片文件名（菜谱封面 + 步骤图）。
+  Set<String> referencedImages() {
+    final out = <String>{};
+    for (final r in _db.select(
+      'SELECT image_path AS p FROM recipes WHERE image_path IS NOT NULL '
+      'UNION SELECT image_path FROM steps WHERE image_path IS NOT NULL',
+    )) {
+      final v = r['p'] as String?;
+      if (v != null && v.isNotEmpty) out.add(v);
+    }
+    return out;
   }
 
   void setImagePath(int id, String? path) {

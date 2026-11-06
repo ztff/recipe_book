@@ -25,6 +25,14 @@ class OcrLine(
     val right: Float,
     val bottom: Float,
     val score: Float,
+    /** 出自第几片（从 0 数），排查分片边界问题时用得上。 */
+    val tile: Int = -1,
+    /**
+     * 短框跑了两次识别时，落选那次的「文本=分数」。
+     * 真机的 ONNX Runtime 和电脑上的数值不完全一致，只有看到这个才能判断
+     * 加白边到底帮没帮上忙。
+     */
+    val alt: String? = null,
 )
 
 /**
@@ -49,14 +57,34 @@ class OcrEngine(
     private var chars: List<String> = emptyList()
     private val lock = Any()
 
+    /// 检测阶段丢弃的框及原因，随结果一起返回，便于定位漏字。
+    private val detDropped = ArrayList<OcrLine>()
+
     private val tileHeight = 1400
-    private val tileOverlap = 80
-    private val detLimit = 736
-    private val detThresh = 0.3f
-    private val boxThresh = 0.5f
+    // 分片重叠。80 时行高 41px 的正文只要落在接缝附近就会贴边：
+    // 真机上「至肉发白。」这一行距 tile 顶部只有 30px、距上一片底部 8px，
+    // 检测网络在边缘丢细节，行尾的「白。」两片都没认出来。
+    // 240 保证每行至少有一片是离边界 100px 以上的。
+    private val tileOverlap = 240
+    // 检测时的短边目标。736 时 1080 宽的截图要缩到 0.68 倍，
+    // 行尾一两个字和很短的用量行容易整个漏掉。960 只缩 0.89 倍，
+    // 行尾的「白。」这种才检得出来。
+    private val detLimit = 960
+    private val detThresh = 0.25f
+    private val boxThresh = 0.4f
     private val unclipRatio = 1.6f
     private val recHeight = 48
-    private val maxRecWidth = 320
+    // PP-OCRv4 训练时最宽 320（约 6.7 个字宽），但长行硬压到 320 会把字挤糊，
+    // 行尾几个字尤其容易认错或直接丢掉。菜谱一行 20 来个字，按比例约 1100 宽，
+    // 这里放宽到 1280，只在上限处兜底。
+    private val maxRecWidth = 1280
+
+    /** 宽度小于这个值的框（约 6 个字以内）会做两次识别取高分。 */
+    private val shortBoxWidth = 250
+    private val padPx = 2
+
+    /// 第二次识别要多赢这么多倍（按整句似然）才换结果。
+    private val multiPickGain = 1.4f
 
     private fun ensureLoaded() {
         if (det != null && rec != null && chars.isNotEmpty()) return
@@ -95,7 +123,13 @@ class OcrEngine(
     }
 
     /** 识别结果，附带图片原始尺寸（Flutter 侧解码会把长边压到 8192，坐标必须按原图算）。 */
-    class OcrResult(val lines: List<OcrLine>, val width: Int, val height: Int)
+    class OcrResult(
+    val lines: List<OcrLine>,
+    val width: Int,
+    val height: Int,
+    /** 检测到了但被置信度过滤掉的行，排查时用来区分「没发现」和「认不准」。 */
+    val dropped: List<OcrLine> = emptyList(),
+)
 
     /** 识别一张本地图片，返回按阅读顺序排好的行。 */
     fun recognize(path: String): OcrResult {
@@ -128,6 +162,8 @@ class OcrEngine(
         onProgress?.invoke(0, totalTiles)
 
         val all = ArrayList<OcrLine>()
+        val dropped = ArrayList<OcrLine>()
+        detDropped.clear()
         var top = 0
         while (top < full.height) {
             val h = min(tileHeight, full.height - top)
@@ -137,9 +173,44 @@ class OcrEngine(
             val boxes = detect(detBitmap)
             for (b in boxes) {
                 val cropped = cropQuad(full, b.points, top)
-                if (cropped == null) continue
-                val (text, score) = recognizeLine(cropped)
-                if (text.isBlank() || score < 0.4f) continue
+                if (cropped == null) {
+                    val ys0 = b.points.map { it[1] + top }
+                    val xs0 = b.points.map { it[0] }
+                    dropped.add(
+                        OcrLine(
+                            text = "cropFail",
+                            left = xs0.min() * scaleBack,
+                            top = ys0.min() * scaleBack,
+                            right = xs0.max() * scaleBack,
+                            bottom = ys0.max() * scaleBack,
+                            score = b.score,
+                            tile = tileDone,
+                        )
+                    )
+                    continue
+                }
+                val (text, score, altNote) = recognizeLine(cropped)
+                cropped.recycle()
+                if (text.isBlank() || score < 0.4f) {
+                    // 连识别结果为空串的框也记下来：能区分「检测没发现」
+                    // 和「检测到了但认不出来」。
+                    if (dropped.size < 300) {
+                        val ys2 = b.points.map { it[1] + top }
+                        val xs2 = b.points.map { it[0] }
+                        dropped.add(
+                            OcrLine(
+                                text = if (text.isBlank()) "recEmpty" else text,
+                                left = xs2.min() * scaleBack,
+                                top = ys2.min() * scaleBack,
+                                right = xs2.max() * scaleBack,
+                                bottom = ys2.max() * scaleBack,
+                                score = score,
+                                tile = tileDone,
+                            )
+                        )
+                    }
+                    continue
+                }
                 val ys = b.points.map { it[1] + top }
                 val xs = b.points.map { it[0] }
                 all.add(
@@ -150,6 +221,8 @@ class OcrEngine(
                         right = xs.max() * scaleBack,
                         bottom = ys.max() * scaleBack,
                         score = score,
+                        tile = tileDone,
+                        alt = altNote,
                     )
                 )
             }
@@ -162,7 +235,21 @@ class OcrEngine(
         }
         full.recycle()
         // 上报解码前声明的原始尺寸，而不是可能被 inSampleSize 缩小的实际位图。
-        return OcrResult(dedupe(all), bounds.outWidth, bounds.outHeight)
+        // 检测阶段丢的框算作 tile 内坐标，这里补上分片偏移
+        for (d in detDropped) {
+            dropped.add(
+                OcrLine(
+                    text = d.text,
+                    left = d.left,
+                    top = d.top,
+                    right = d.right,
+                    bottom = d.bottom,
+                    score = d.score,
+                    tile = d.tile,
+                )
+            )
+        }
+        return OcrResult(dedupe(all), bounds.outWidth, bounds.outHeight, dropped)
     }
 
     // ---------- 检测 ----------
@@ -256,6 +343,7 @@ class OcrEngine(
             stack[sp++] = start
             seen[start] = true
             var scoreSum = 0f
+            var scoreCount = 0
             while (sp > 0) {
                 val p = stack[--sp]
                 val py = p / w
@@ -263,7 +351,14 @@ class OcrEngine(
                 ptsX[count] = px
                 ptsY[count] = py
                 count++
-                scoreSum += prob[p]
+                // 分数只统计膨胀前就命中的像素。膨胀是为了把断开的笔画连成一行，
+                // 扩出来的一圈是背景（概率接近 0），算进去会把短行的平均分拉低：
+                // 「4勺」「白就差不多了。」这类 2~7 个字的行周长占比高，
+                // 分数被压到阈值以下就整个漏掉，长行却几乎不受影响。
+                if (bin[p]) {
+                    scoreSum += prob[p]
+                    scoreCount++
+                }
                 for (dy in -1..1) {
                     val ny = py + dy
                     if (ny < 0 || ny >= h) continue
@@ -278,16 +373,52 @@ class OcrEngine(
                     }
                 }
             }
-            if (count < 20) continue
-            val score = scoreSum / count
-            if (score < boxThresh) continue
-            val rect = minAreaRect(ptsX, ptsY, count) ?: continue
+            val bx0 = ptsX.take(count).min() / scale
+            val bx1 = ptsX.take(count).max() / scale
+            val by0 = ptsY.take(count).min() / scale
+            val by1 = ptsY.take(count).max() / scale
+            fun note(reason: String, sc: Float) {
+                if (detDropped.size < 200) {
+                    detDropped.add(
+                        OcrLine(
+                            text = reason,
+                            left = bx0, top = by0, right = bx1, bottom = by1,
+                            score = sc,
+                        )
+                    )
+                }
+            }
+            if (count < 20) { note("px<20", 0f); continue }
+            if (scoreCount < 6) { note("hit<6", 0f); continue }
+            val score = scoreSum / scoreCount
+            if (score < boxThresh) { note("detScore", score); continue }
+            val rect = minAreaRect(ptsX, ptsY, count)
+            if (rect == null) { note("hull", score); continue }
             val expanded = unclip(rect)
-            val pts = expanded.map { floatArrayOf(it[0] / scale, it[1] / scale) }
+            val pts = orderQuad(expanded.map { floatArrayOf(it[0] / scale, it[1] / scale) })
             boxes.add(Box(pts, score))
         }
         boxes.sortWith(compareBy({ it.points.minOf { p -> p[1] } }, { it.points.minOf { p -> p[0] } }))
         return boxes
+    }
+
+    /**
+     * 把 4 点重排成 左上 → 右上 → 右下 → 左下。
+     *
+     * minAreaRect 拿凸包的每条边当 u 轴，边从右往左时 u 轴反向，
+     * 四点就会变成「右上起」。cropQuad 是固定把第 0 个点映射到 (0,0) 的，
+     * 顺序一错整行就被翻转过来，中文镜像后识别必出空串。
+     * 真机上「排骨切段…」「排骨放入冷水焯一下…」等 8 行长正文就是这么丢的。
+     */
+    private fun orderQuad(pts: List<FloatArray>): List<FloatArray> {
+        if (pts.size != 4) return pts
+        val tl = pts.minByOrNull { it[0] + it[1] } ?: return pts
+        val br = pts.maxByOrNull { it[0] + it[1] } ?: return pts
+        val tr = pts.maxByOrNull { it[0] - it[1] } ?: return pts
+        val bl = pts.minByOrNull { it[0] - it[1] } ?: return pts
+        // 退化情况（四点重合或近似共线）保持原样，交给 cropQuad 判空
+        if (tl === tr || tr === br || br === bl || bl === tl) return pts
+        return listOf(tl, tr, br, bl)
     }
 
     /** 4 点，顺序：左上 右上 右下 左下。 */
@@ -405,17 +536,54 @@ class OcrEngine(
 
     // ---------- 识别 ----------
 
-    private fun recognizeLine(bitmap: Bitmap): Pair<String, Float> {
-        val session = rec ?: return "" to 0f
+    /**
+     * 短框的识别结果会抖：同一张「一壶」，输入宽 96 出「一款」(0.283)、
+     * 100 出「一壶」(0.871)、103 只出一个「一」(0.598)。长行没这毛病。
+     * 所以宽度不足 [shortBoxWidth] 的框用原图和左右各加 [padPx] 白边各认一次，
+     * 取置信度高的那个。
+     */
+    private fun recognizeLine(bitmap: Bitmap): Triple<String, Float, String?> {
+        if (rec == null) return Triple("", 0f, null)
         val ratio = bitmap.width.toFloat() / bitmap.height
-        var w = (recHeight * ratio).toInt().coerceIn(8, maxRecWidth)
+        val w = (recHeight * ratio).toInt().coerceIn(8, maxRecWidth)
+        var best = runRec(bitmap, w)
+        var altNote: String? = null
+        if (bitmap.width < shortBoxWidth) {
+            val padded = Bitmap.createBitmap(
+                bitmap.width + padPx * 2, bitmap.height, Bitmap.Config.ARGB_8888
+            )
+            val canvas = android.graphics.Canvas(padded)
+            canvas.drawColor(0xFFFFFFFF.toInt())
+            canvas.drawBitmap(bitmap, padPx.toFloat(), 0f, null)
+            val w2 = (recHeight * padded.width.toFloat() / padded.height).toInt()
+                .coerceIn(8, maxRecWidth)
+            val alt = runRec(padded, w2)
+            padded.recycle()
+            // 按整句似然比，不能按逐字平均：两个各 0.75 的字输给一个 0.8 的字，
+            // 结果就是「一壶」永远被「壶」压住。要求长候选赢 1.4 倍，
+            // 否则「朴超市」会被 4 个字 0.77 的「界朴超市」挤掉。
+            val bestTotal = best.first.length * best.second
+            val altTotal = alt.first.length * alt.second
+            if (altTotal > bestTotal * multiPickGain) {
+                altNote = "pad0:" + best.first + "=" + fmt2(best.second)
+                best = alt
+            } else {
+                altNote = "pad2:" + alt.first + "=" + fmt2(alt.second)
+            }
+        }
+        return Triple(best.first, best.second, altNote)
+    }
+
+    private fun fmt2(v: Float): String = String.format(java.util.Locale.US, "%.2f", v)
+
+    private fun runRec(bitmap: Bitmap, w: Int): Pair<String, Float> {
+        val session = rec ?: return "" to 0f
         val scaled = Bitmap.createScaledBitmap(bitmap, w, recHeight, true)
-        if (scaled !== bitmap) bitmap.recycle()
 
         val buf = FloatBuffer.allocate(3 * recHeight * w)
         val pixels = IntArray(w * recHeight)
         scaled.getPixels(pixels, 0, w, 0, 0, w, recHeight)
-        scaled.recycle()
+        if (scaled !== bitmap) scaled.recycle()
         for (c in 0 until 3) {
             val base = c * recHeight * w
             for (i in pixels.indices) {

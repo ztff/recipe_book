@@ -4,6 +4,8 @@ description: "完全离线的本地菜谱 App：结构化食材、拼音搜索�
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
+# 本项目代码由 AI 辅助编写。开源协议：MIT（见 LICENSE）。
+
 # The following defines the version and build number for your application.
 # A version number is three numbers separated by dots, like 1.2.43
 # followed by an optional build number separated by a +.
@@ -16,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.4.3+18
+version: 1.7.24+60
 
 environment:
   sdk: ^3.13.7
@@ -47,6 +49,7 @@ dependencies:
   sqlite3: ^3.8.0
   package_info_plus: ^10.2.2
   file_picker: ^13.3.2
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

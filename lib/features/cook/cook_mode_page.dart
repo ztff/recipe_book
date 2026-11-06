@@ -6,7 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../core/app_settings.dart';
+import '../../core/constants.dart';
 import '../../core/paths.dart';
+import '../../core/servings_scale.dart';
 import '../../widgets/photo_viewer.dart';
 import '../../data/db.dart';
 import '../../main.dart';
@@ -28,6 +30,134 @@ class _CookModePageState extends State<CookModePage> {
   int _remain = 0;
 
   List<StepRow> get _steps => widget.detail.steps;
+
+  /// 做菜时的份量。null 表示按菜谱原始份量。退出就丢，不改配方。
+  int? _servingsOverride;
+
+  int get _shownServings =>
+      _servingsOverride ?? widget.detail.recipe.servings;
+
+  void _bumpServings(int delta) {
+    final base = widget.detail.recipe.servings;
+    final next = (_shownServings + delta).clamp(kMinServings, kMaxServings);
+    _servingsOverride = next == base ? null : next;
+  }
+
+  /// 手边看用料：点开抽屉，边调份量边看数量。
+  void _openIngredients() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setSheet) {
+          final scheme = Theme.of(c).colorScheme;
+          final base = widget.detail.recipe.servings;
+          final cur = _shownServings;
+          return SafeArea(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(c).size.height * 0.7,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 12, 8),
+                    child: Row(
+                      children: [
+                        Text('食材',
+                            style: Theme.of(c).textTheme.titleMedium),
+                        const Spacer(),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          onPressed: cur > kMinServings
+                              ? () {
+                                  setSheet(() => _bumpServings(-1));
+                                  setState(() {});
+                                }
+                              : null,
+                          icon: const Icon(Icons.remove_circle_outline),
+                          iconSize: 20,
+                        ),
+                        Text(
+                          cur.toString() + ' 人份',
+                          style: Theme.of(c).textTheme.labelLarge?.copyWith(
+                                color: cur != base
+                                    ? scheme.primary
+                                    : scheme.onSurfaceVariant,
+                                fontWeight:
+                                    cur != base ? FontWeight.w600 : null,
+                              ),
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          onPressed: cur < kMaxServings
+                              ? () {
+                                  setSheet(() => _bumpServings(1));
+                                  setState(() {});
+                                }
+                              : null,
+                          icon: const Icon(Icons.add_circle_outline),
+                          iconSize: 20,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Flexible(
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                      children: [
+                        for (final g in kIngredientGroups)
+                          ...() {
+                            final items = widget.detail.ingredients
+                                .where((i) => i.grp == g)
+                                .toList();
+                            if (items.isEmpty) return <Widget>[];
+                            return <Widget>[
+                              Padding(
+                                padding:
+                                    const EdgeInsets.only(top: 10, bottom: 4),
+                                child: Text(g,
+                                    style: Theme.of(c)
+                                        .textTheme
+                                        .labelLarge
+                                        ?.copyWith(color: scheme.primary)),
+                              ),
+                              for (final i in items)
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 3),
+                                  child: Row(
+                                    children: [
+                                      Expanded(child: Text(i.name)),
+                                      Text(
+                                        scaledQtyText(
+                                            i.qty, i.unit, base, cur),
+                                        style: Theme.of(c)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                                color: scheme
+                                                    .onSurfaceVariant),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ];
+                          }(),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -147,6 +277,11 @@ class _CookModePageState extends State<CookModePage> {
       appBar: AppBar(
         title: Text(widget.detail.recipe.name),
         actions: [
+          IconButton(
+            onPressed: _openIngredients,
+            icon: const Icon(Icons.egg_alt_outlined),
+            tooltip: '看食材',
+          ),
           Center(
             child: Padding(
               padding: const EdgeInsets.only(right: 12),

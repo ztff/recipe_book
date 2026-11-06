@@ -7,6 +7,10 @@
 一款**完全离线**的本地菜谱应用：结构化食材、拼音首字母搜索、烹饪模式计时、采购清单自动合并。
 一套 Flutter 代码同时构建 **Android** 与 **Windows 桌面**，无网络权限、无账号、无云同步，所有数据只存在你自己的设备上。
 
+> 本项目代码由 AI 辅助编写。
+>
+> 以 MIT 协议开源，详见 [LICENSE](LICENSE)。
+
 <p align="center">
   <img src="docs/screenshots/android-list.png" width="24%" alt="菜谱列表">
   <img src="docs/screenshots/android-detail.png" width="24%" alt="菜谱详情">
@@ -119,7 +123,7 @@ test/widget_test.dart              合并算法与格式化的单元测试
 
 ## 数据与隐私
 
-- 应用**不申请网络权限**（release APK 的 manifest 中没有 `INTERNET`），全部逻辑在本地完成
+- 应用**不申请网络权限**（release APK 的 manifest 中没有 `INTERNET`），全部逻辑在本地完成。设置里的「获取更新」只是把发布页网址交给系统浏览器打开，应用自己不联网
 - 数据库是单个 SQLite 文件，图片存在同目录的 `images/`，路径在「设置 → 关于」里可见
 - 备份包就是一个 zip，解压后是 `recipe_book.sqlite` + `images/`，可自行用任意工具读取
 - 启动过程会写 `startup.log` 到程序目录，仅用于排查启动问题，可随时删除

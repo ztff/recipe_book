@@ -102,6 +102,27 @@ const Map<String, double> kCnNumber = {
   '十': 10,
 };
 
+/// OCR 常把汉字「一」认成一横，真机上见过 `—壶`（破折号）代替「一壶」。
+/// 这些码位统一折回「一」再解析。注意不收 ASCII 连字符 `-`，
+/// 那是「1-2 个」这种区间的正常写法。
+const List<String> _dashLike = [
+  '\u2012', // figure dash
+  '\u2013', // en dash
+  '\u2014', // em dash
+  '\u2015', // horizontal bar
+  '\u2212', // minus sign
+  '\uFF0D', // fullwidth hyphen-minus
+];
+
+/// 把认错成横线的汉字「一」折回来。
+String normalizeCnDash(String s) {
+  var out = s;
+  for (final c in _dashLike) {
+    out = out.replaceAll(c, '一');
+  }
+  return out;
+}
+
 /// 「开水一」+ 单位「壶」这种拆法：OCR 把数量那个「一」粘到名字尾巴上了。
 /// 只有「有单位、没数量」时才拆，免得把「三文鱼」这类正常名字切坏。
 ({String name, double? qty}) splitTrailingQuantity(
@@ -113,7 +134,8 @@ const Map<String, double> kCnNumber = {
   if (qty != null) return (name: n, qty: qty);
   if (unit == null || unit.trim().isEmpty) return (name: n, qty: qty);
   if (n.length < 2) return (name: n, qty: qty);
-  final v = kCnNumber[n[n.length - 1]];
+  final tail = n[n.length - 1];
+  final v = kCnNumber[tail] ?? (_dashLike.contains(tail) ? 1.0 : null);
   if (v == null) return (name: n, qty: qty);
   return (name: n.substring(0, n.length - 1), qty: v);
 }
