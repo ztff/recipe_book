@@ -81,57 +81,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     }
   }
 
-  Future<void> _pickImage({bool camera = false}) async {
-    final old = _detail?.recipe.imagePath;
-    final name = await pickAndStoreImage(fromCamera: camera);
-    if (name == null) return;
-    appDb.setImagePath(widget.recipeId, name);
-    if (old != null && old != name) await deleteImageQuietly(old);
-    if (mounted) _reload();
-  }
-
-  void _imageOptions() {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (c) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (Platform.isAndroid || Platform.isIOS)
-              ListTile(
-                leading: const Icon(Icons.photo_camera_outlined),
-                title: const Text('拍一张'),
-                onTap: () {
-                  Navigator.pop(c);
-                  _pickImage(camera: true);
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('从相册/文件选'),
-              onTap: () {
-                Navigator.pop(c);
-                _pickImage();
-              },
-            ),
-            if (_detail?.recipe.imagePath != null)
-              ListTile(
-                leading: const Icon(Icons.delete_outline),
-                title: const Text('移除图片'),
-                onTap: () async {
-                  final old = _detail?.recipe.imagePath;
-                  Navigator.pop(c);
-                  appDb.setImagePath(widget.recipeId, null);
-                  await deleteImageQuietly(old);
-                  if (mounted) _reload();
-                },
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final d = _detail;
@@ -157,7 +106,11 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             flexibleSpace: hasImage
                 ? FlexibleSpaceBar(
                     background: GestureDetector(
-                      onTap: _imageOptions,
+                      onTap: () => showPhotoViewer(
+                        context,
+                        imageFullPath(r.imagePath!),
+                        caption: r.name,
+                      ),
                       child: Image.file(
                         File(imageFullPath(r.imagePath!)),
                         fit: BoxFit.cover,
@@ -177,11 +130,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                       child: Text(r.name,
                           style: Theme.of(context).textTheme.headlineSmall),
                     ),
-                    if (!hasImage)
-                      IconButton(
-                        onPressed: _imageOptions,
-                        icon: const Icon(Icons.add_photo_alternate_outlined),
-                      ),
                   ],
                 ),
                 if (r.description != null && r.description!.isNotEmpty) ...[

@@ -20,6 +20,7 @@ import '../../core/screenshot_parser.dart';
 import '../../data/db.dart';
 import '../../data/ocr_raw_store.dart';
 import '../../main.dart';
+import '../../widgets/cover_actions.dart';
 
 class _IngEdit {
   _IngEdit({
@@ -176,8 +177,8 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     ));
   }
 
-  Future<void> _pickImage() async {
-    final name = await pickAndStoreImage();
+  Future<void> _pickImage({bool camera = false}) async {
+    final name = await pickAndStoreImage(fromCamera: camera);
     if (name == null) return;
     final file = File(imageFullPath(name));
 
@@ -239,6 +240,25 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
     }
     _discardImage(name);
     setState(() => _imagePath = cropped);
+  }
+
+  /// 点封面时弹「拍一张 / 从相册选 / 移除图片」。详情页不再管封面，
+  /// 三个操作都收在这里，桌面端没有相机就不显示「拍一张」。
+  Future<void> _coverOptions() async {
+    final action = await showCoverActions(
+      context,
+      allowCamera: Platform.isAndroid || Platform.isIOS,
+      hasImage: _imagePath != null,
+    );
+    if (action == null || !mounted) return;
+    switch (action) {
+      case CoverAction.camera:
+        await _pickImage(camera: true);
+      case CoverAction.gallery:
+        await _pickImage();
+      case CoverAction.remove:
+        setState(() => _imagePath = null);
+    }
   }
 
   void _discardImage(String name) {
@@ -740,7 +760,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> {
             ),
           ],
           GestureDetector(
-            onTap: _pickImage,
+            onTap: _coverOptions,
             child: Container(
               height: 150,
               decoration: BoxDecoration(
