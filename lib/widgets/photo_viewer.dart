@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 点开图片看大图，支持双指缩放。
 Future<void> showPhotoViewer(

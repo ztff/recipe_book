@@ -9,6 +9,7 @@
 2. Android 加自适应图标：圆形、方圆、水滴等系统遮罩下都完整，不再把方图硬裁掉边
 3. Windows 图标补齐 16/24/32/48/64/128/256 七档，任务栏、开始菜单、设置里的应用卡片都能对上
 4. 图标源文件 design/app_icon.svg 与生成脚本 tool/gen_app_icons.py 入库，以后改图一条命令重出全套
+5. 跟随上游把 Material 依赖从 package:flutter/material.dart 迁到 material_ui 包，修掉新版 Flutter stable 上 CI 的 analyze 报错
 
 ## 1.7.25
 

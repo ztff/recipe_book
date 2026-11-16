@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 封面图能做的三件事。详情页不提供，只在编辑页点封面时弹出。
 enum CoverAction { camera, gallery, remove }

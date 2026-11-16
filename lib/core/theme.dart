@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 可选主题色（顺序即设置页里的排列顺序，索引会被持久化）。
 const kSeedColors = <(Color, String)>[
