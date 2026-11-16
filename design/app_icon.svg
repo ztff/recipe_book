@@ -1,0 +1,111 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024"
+     xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bgGlow" cx="30%" cy="24%" r="90%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="55%" stop-color="#FFF7E8"/>
+      <stop offset="100%" stop-color="#FFE6C4"/>
+    </radialGradient>
+
+    <!-- 背景彩色光斑 -->
+    <radialGradient id="blobOrange">
+      <stop offset="0%" stop-color="#FF7A59" stop-opacity="0.80"/>
+      <stop offset="100%" stop-color="#FF7A59" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="blobGreen">
+      <stop offset="0%" stop-color="#55C2A3" stop-opacity="0.75"/>
+      <stop offset="100%" stop-color="#55C2A3" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="blobPink">
+      <stop offset="0%" stop-color="#FF5D73" stop-opacity="0.70"/>
+      <stop offset="100%" stop-color="#FF5D73" stop-opacity="0"/>
+    </radialGradient>
+
+    <filter id="blobBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="80"/>
+    </filter>
+
+    <!-- 磨砂噪点 -->
+    <filter id="noise" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85"
+                    numOctaves="2" stitchTiles="stitch" result="n"/>
+      <feColorMatrix in="n" type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.08"/>
+      </feComponentTransfer>
+    </filter>
+
+    <linearGradient id="ringGrad" x1="18%" y1="8%" x2="82%" y2="96%">
+      <stop offset="0%" stop-color="#FFB08C"/>
+      <stop offset="50%" stop-color="#FF7A59"/>
+      <stop offset="100%" stop-color="#E04F36"/>
+    </linearGradient>
+    <linearGradient id="foldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFE3A8"/>
+      <stop offset="100%" stop-color="#FFB347"/>
+    </linearGradient>
+    <radialGradient id="dotGrad" cx="34%" cy="30%" r="78%">
+      <stop offset="0%" stop-color="#FFB3BE"/>
+      <stop offset="55%" stop-color="#FF5D73"/>
+      <stop offset="100%" stop-color="#DE3A55"/>
+    </radialGradient>
+
+    <filter id="floatShadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="26" stdDeviation="30"
+                    flood-color="#B5472F" flood-opacity="0.22"/>
+    </filter>
+
+    <clipPath id="glassClip">
+      <rect x="112" y="112" width="800" height="800" rx="168"/>
+    </clipPath>
+  </defs>
+
+  <!-- 明亮底 -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bgGlow)"/>
+
+  <!-- 模糊彩色光斑 -->
+  <g filter="url(#blobBlur)">
+    <circle cx="310" cy="330" r="230" fill="url(#blobOrange)"/>
+    <circle cx="750" cy="320" r="210" fill="url(#blobGreen)"/>
+    <circle cx="520" cy="770" r="250" fill="url(#blobPink)"/>
+  </g>
+
+  <!-- 毛玻璃卡片 -->
+  <rect x="112" y="112" width="800" height="800" rx="168"
+        fill="#FFFFFF" fill-opacity="0.30"/>
+
+  <!-- 磨砂噪点，限制在玻璃区域内 -->
+  <g clip-path="url(#glassClip)">
+    <rect x="112" y="112" width="800" height="800" filter="url(#noise)"/>
+  </g>
+
+  <!-- 玻璃边缘高光 -->
+  <rect x="112" y="112" width="800" height="800" rx="168"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.75"
+        stroke-width="2.5"/>
+
+  <!-- 半透明图标主体 -->
+  <g filter="url(#floatShadow)" transform="translate(0,-12)">
+    <!-- 环：半透明渐变 -->
+    <circle cx="512" cy="512" r="218"
+            fill="none" stroke="url(#ringGrad)"
+            stroke-width="74" stroke-opacity="0.88"/>
+    <!-- 环内白色高光 -->
+    <circle cx="512" cy="512" r="218"
+            fill="none" stroke="#FFFFFF"
+            stroke-width="16" stroke-opacity="0.22"/>
+
+    <!-- 折页：半透明 + 玻璃描边 -->
+    <path d="M 636 258 L 774 258 L 774 396 Z"
+          fill="url(#foldGrad)" fill-opacity="0.85"/>
+    <path d="M 636 258 L 774 258 L 774 396 Z"
+          fill="none" stroke="#FFFFFF"
+          stroke-opacity="0.70" stroke-width="5"/>
+
+    <!-- 味觉核心 -->
+    <circle cx="512" cy="512" r="70"
+            fill="url(#dotGrad)" fill-opacity="0.92"/>
+    <ellipse cx="491" cy="487" rx="21" ry="13"
+             fill="#FFFFFF" opacity="0.60"/>
+  </g>
+</svg>
